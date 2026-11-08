@@ -93,7 +93,7 @@ function home() {
     return;
   }
   const lastAbl = store.eintraege('ablesung').at(-1);
-  const maps = store.kreise().map(k => ({ k, daily: S.heatDaily(k.id) }));
+  const maps = S.kreisSeries();
   const fc = S.oilForecast();
   const heiz = S.settingsSeries().at(-1);
   const kpi = (n) => maps.map(m => ({ m, a: S.avgPerDay(m.daily, n) }));
@@ -110,7 +110,7 @@ function home() {
     <div class="grid">
       <div class="card"><h2>Ø Wärme pro Tag</h2>
         <table><thead><tr><th>Kreis</th><th>7 Tage</th><th>30 Tage</th></tr></thead><tbody>
-        ${maps.map((m, i) => `<tr><td><span class="swatch" style="background:${kreisFarbe(m.k.farbe || i + 1)}"></span>${esc(m.k.name)}</td><td>${fmtAuto(k7[i].a?.proTag)}</td><td>${fmtAuto(k30[i].a?.proTag)}</td></tr>`).join('')}
+        ${maps.map((m, i) => `<tr><td><span class="swatch" style="background:${kreisFarbe(m.k.farbe || i + 1)}"></span>${esc(m.label)}</td><td>${fmtAuto(k7[i].a?.proTag)}</td><td>${fmtAuto(k30[i].a?.proTag)}</td></tr>`).join('')}
         <tr><td><b>Gesamt</b></td><td><b>${fmtAuto(sum(k7))}</b></td><td><b>${fmtAuto(sum(k30))}</b></td></tr></tbody></table>
         <p class="muted small">kWh pro Tag</p></div>
       <div class="card"><h2>Öl</h2>
@@ -136,7 +136,7 @@ function home() {
   const keys = S.periodRange([...days], 'week').slice(-12);
   if (!keys.length) return;
   const c = view.querySelector('[data-mini]');
-  const ds = maps.map((m, i) => { const a = S.aggregate(m.daily, 'week'); return { label: m.k.name, data: keys.map(k => a.get(k)?.menge ?? null), backgroundColor: kreisFarbe(m.k.farbe || i + 1), stack: 's', borderRadius: 2 }; });
+  const ds = maps.map((m, i) => { const a = S.aggregate(m.daily, 'week'); return { label: m.label, data: keys.map(k => a.get(k)?.menge ?? null), backgroundColor: kreisFarbe(m.k.farbe || i + 1), stack: 's', borderRadius: 2 }; });
   miniChart = new Chart(c, {
       type: 'bar', data: { labels: keys.map(k => S.periodLabel(k, 'week').replace(/ ’\d+/, '')), datasets: ds },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, callbacks: { label: x => `${x.dataset.label}: ${fmtAuto(x.raw)} kWh` } } },
@@ -240,11 +240,12 @@ function settings() {
     <div class="section-title">Kreise</div>
     <div class="card" style="padding:4px 16px"><ul class="list" data-kreise>
       ${store.kreise({ alle: true }).map((k, i, arr) => `<li data-id="${k.id}" style="cursor:default"><div class="row" style="flex-wrap:wrap">
-        <div><span class="swatch" style="background:${kreisFarbe(k.farbe || i + 1)}"></span><b>${esc(k.name)}</b>${k.archiviert ? ' <span class="tag">archiviert</span>' : ''}</div>
+        <div><span class="swatch" style="background:${kreisFarbe(k.farbe || i + 1)}"></span><b>${esc(k.name)}</b>${k.archiviert ? ' <span class="tag">archiviert</span>' : ''}${k.teilVon && store.kreis(k.teilVon) ? ` <span class="tag">Unterzähler von ${esc(store.kreis(k.teilVon).name)}</span>` : ''}</div>
         <div style="display:flex;gap:6px">
           <button class="btn small" data-up ${i === 0 ? 'disabled' : ''} aria-label="nach oben">↑</button>
           <button class="btn small" data-down ${i === arr.length - 1 ? 'disabled' : ''} aria-label="nach unten">↓</button>
           <button class="btn small" data-rename>Umbenennen</button>
+          <button class="btn small" data-parent>Teil von…</button>
           <button class="btn small" data-archive>${k.archiviert ? 'Aktivieren' : 'Archivieren'}</button></div></div></li>`).join('')}
     </ul><div class="actions" style="margin:4px 0 12px"><button class="btn small" data-addkreis>+ Kreis hinzufügen</button></div></div>
 
@@ -318,6 +319,14 @@ function settings() {
     };
     li.querySelector('[data-up]').onclick = () => swap(i - 1);
     li.querySelector('[data-down]').onclick = () => swap(i + 1);
+    li.querySelector('[data-parent]').onclick = () => {
+      const opts = kreisList.filter(x => x.id !== k.id && !x.teilVon);
+      dialog(`<h2>„${esc(k.name)}“ ist …</h2>
+        <p class="muted small">Ein Unterzähler misst einen Teil dessen, was der übergeordnete Zähler schon mitzählt (z. B. Studio im EG). Gesamtwerte zählen ihn dann nicht doppelt.</p>
+        <ul class="list"><li data-p="">ein eigenständiger Zähler</li>${opts.map(o => `<li data-p="${o.id}">Unterzähler von ${esc(o.name)}</li>`).join('')}</ul>`, (root, close) => {
+        root.querySelectorAll('[data-p]').forEach(x => x.onclick = () => { store.saveKreis({ ...k, teilVon: x.dataset.p || undefined }); close(); settings(); toast('Gespeichert'); });
+      });
+    };
     li.querySelector('[data-rename]').onclick = () => {
       const n = prompt('Neuer Name für den Kreis:', k.name);
       if (n && n.trim()) { store.saveKreis({ ...k, name: n.trim() }); settings(); }

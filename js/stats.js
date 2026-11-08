@@ -60,6 +60,36 @@ function pointsToIntervals(pts) {
 }
 export function heatDaily(kreisId) { return distribute(pointsToIntervals(heatPoints(kreisId))); }
 
+// Unterzähler: Ein Kreis mit `teilVon` ist im Zähler des übergeordneten Kreises enthalten (z. B. Studio im EG).
+function subtractDaily(a, subs) {
+  const out = new Map();
+  for (const [k, v] of a) {
+    const minus = subs.reduce((s, m) => s + (m.get(k)?.menge || 0), 0);
+    out.set(k, { menge: v.menge - minus, abdeckung: v.abdeckung });
+  }
+  return out;
+}
+const isTopLevel = (k, ks) => !k.teilVon || !ks.some(p => p.id === k.teilVon);
+
+// Kreise zur Aufteilung: Hauptzähler ohne ihre Unterzähler, Unterzähler einzeln. Die Summe ist der echte Gesamtverbrauch.
+export function kreisSeries() {
+  const ks = store.kreise();
+  const gross = new Map(ks.map(k => [k.id, heatDaily(k.id)]));
+  return ks.map(k => {
+    const kids = ks.filter(c => c.teilVon === k.id);
+    return {
+      k, idx: k.farbe || k.reihenfolge || 1,
+      label: kids.length ? `${k.name} ohne ${kids.map(c => c.name).join(', ')}` : k.name,
+      daily: kids.length ? subtractDaily(gross.get(k.id), kids.map(c => gross.get(c.id))) : gross.get(k.id),
+    };
+  });
+}
+// Gesamter Wärmeverbrauch: nur Hauptzähler (Unterzähler sind darin schon enthalten)
+export function totalHeatDaily() {
+  const ks = store.kreise();
+  return sumDaily(ks.filter(k => isTopLevel(k, ks)).map(k => heatDaily(k.id)));
+}
+
 // ---------- Öl ----------
 export function oilPoints() {
   return store.eintraege('ablesung').filter(e => Number.isFinite(e.oel)).map(e => ({ t: parseZeit(e.zeit), v: e.oel, id: e.id }));

@@ -50,7 +50,7 @@ function chart(el, cfg) {
 function canvas(root, sel) { return root.querySelector(sel); }
 
 function heatMaps() {
-  return store.kreise().map(k => ({ k, idx: k.farbe || k.reihenfolge || 1, daily: S.heatDaily(k.id) }));
+  return S.kreisSeries();
 }
 function allDayKeys(maps) {
   const s = new Set();
@@ -96,7 +96,7 @@ function verbrauch(body) {
     <div class="card"><h2>Wärmeverbrauch ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'}</h2><div class="chart tall"><canvas data-c></canvas></div>
       <p class="muted small">Blassere Balken: Zeitraum nur teilweise durch Ablesungen abgedeckt.</p></div>
     <div class="card"><h2>Tabelle</h2><div class="table-wrap"><table>
-      <thead><tr><th>Zeitraum</th>${agg.map(a => `<th>${esc(a.k.name)}</th>`).join('')}<th>Gesamt</th></tr></thead>
+      <thead><tr><th>Zeitraum</th>${agg.map(a => `<th>${esc(a.label)}</th>`).join('')}<th>Gesamt</th></tr></thead>
       <tbody>${[...keys].reverse().map(k => {
         const vs = agg.map(a => val(a.agg, k));
         const tot = vs.some(v => v !== null) ? vs.reduce((s, v) => s + (v || 0), 0) : null;
@@ -113,7 +113,7 @@ function verbrauch(body) {
       datasets: agg.map(a => {
         const c = kreisFarbe(a.idx);
         return {
-          label: a.k.name, data: keys.map(k => val(a.agg, k)), stack: 's',
+          label: a.label, data: keys.map(k => val(a.agg, k)), stack: 's',
           backgroundColor: keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 ? alpha(c, 0.4) : c)),
           borderRadius: 3, maxBarThickness: 46,
         };
@@ -169,7 +169,7 @@ function kreiseTab(body) {
       <div class="card"><h2>Anteile am Wärmeverbrauch</h2><div class="chart"><canvas data-c></canvas></div></div>
       <div class="card"><h2>Kreise im Vergleich</h2><div class="table-wrap"><table>
         <thead><tr><th>Kreis</th><th>kWh</th><th>Anteil</th><th>Ø kWh/Tag</th></tr></thead>
-        <tbody>${rows.map(r => `<tr><td><span class="swatch" style="background:${kreisFarbe(r.idx)}"></span>${esc(r.k.name)}</td><td>${fmtAuto(r.menge)}</td><td>${total ? fmt(r.menge / total * 100, 1) + ' %' : '–'}</td><td>${fmtAuto(r.proTag)}</td></tr>`).join('')}
+        <tbody>${rows.map(r => `<tr><td><span class="swatch" style="background:${kreisFarbe(r.idx)}"></span>${esc(r.label)}</td><td>${fmtAuto(r.menge)}</td><td>${total ? fmt(r.menge / total * 100, 1) + ' %' : '–'}</td><td>${fmtAuto(r.proTag)}</td></tr>`).join('')}
         <tr><td><b>Gesamt</b></td><td><b>${fmtAuto(total)}</b></td><td></td><td><b>${fmtAuto(rows.reduce((s, r) => s + (r.proTag || 0), 0))}</b></td></tr></tbody>
       </table></div></div>
     </div>
@@ -178,7 +178,7 @@ function kreiseTab(body) {
 
   chart(canvas(body, '[data-c]'), {
     type: 'doughnut',
-    data: { labels: rows.map(r => r.k.name), datasets: [{ data: rows.map(r => Math.max(0, r.menge)), backgroundColor: rows.map(r => kreisFarbe(r.idx)), borderColor: cssVar('--surface'), borderWidth: 2 }] },
+    data: { labels: rows.map(r => r.label), datasets: [{ data: rows.map(r => Math.max(0, r.menge)), backgroundColor: rows.map(r => kreisFarbe(r.idx)), borderColor: cssVar('--surface'), borderWidth: 2 }] },
     options: {
       responsive: true, maintainAspectRatio: false, cutout: '62%',
       plugins: {
@@ -195,7 +195,7 @@ function kreiseTab(body) {
       labels: keys.map(k => S.periodLabel(k, 'month')),
       datasets: rows.map(r => {
         const a = S.aggregate(r.daily, 'month');
-        return { label: r.k.name, data: keys.map(k => { const o = a.get(k); return o && o.tage ? o.menge / o.tage : null; }), borderColor: kreisFarbe(r.idx), backgroundColor: kreisFarbe(r.idx), tension: .3, spanGaps: true, pointRadius: 3 };
+        return { label: r.label, data: keys.map(k => { const o = a.get(k); return o && o.tage ? o.menge / o.tage : null; }), borderColor: kreisFarbe(r.idx), backgroundColor: kreisFarbe(r.idx), tension: .3, spanGaps: true, pointRadius: 3 };
       }),
     },
     options: baseOptions({ plugins: { ...baseOptions().plugins, tooltip: { ...baseOptions().plugins.tooltip, callbacks: { label: c => `${c.dataset.label}: ${fmtAuto(c.raw)} kWh/Tag` } } } }),
@@ -205,13 +205,13 @@ function kreiseTab(body) {
 // ---------- Jahresvergleich ----------
 function seriesFor(sel) {
   if (sel === 'oel') return { daily: S.oilDaily(), unit: 'L' };
-  if (sel === 'alle') return { daily: S.sumDaily(heatMaps().map(m => m.daily)), unit: 'kWh' };
+  if (sel === 'alle') return { daily: S.totalHeatDaily(), unit: 'kWh' };
   return { daily: S.heatDaily(sel), unit: 'kWh' };
 }
 function seriesSelect(sel) {
   return `<select data-sel style="width:auto;font-size:15px;padding:7px 30px 7px 12px">
     <option value="alle" ${sel === 'alle' ? 'selected' : ''}>Alle Kreise</option>
-    ${store.kreise().map(k => `<option value="${k.id}" ${sel === k.id ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}
+    ${store.kreise().map(k => `<option value="${k.id}" ${sel === k.id ? 'selected' : ''}>${esc(k.name)}${store.kreise().some(c => c.teilVon === k.id) ? ' (ganzer Zähler)' : ''}</option>`).join('')}
     <option value="oel" ${sel === 'oel' ? 'selected' : ''}>Öl (Liter)</option></select>`;
 }
 
@@ -406,7 +406,7 @@ function oel(body) {
 
 // ---------- Nutzungsgrad ----------
 function effizienz(body) {
-  const heat = S.sumDaily(heatMaps().map(m => m.daily));
+  const heat = S.totalHeatDaily();
   const oil = S.oilDaily();
   const f = store.settings().oelKwhProLiter;
   if (!heat.size || !oil.size) { body.innerHTML = noData('Dafür braucht es Ablesungen mit Wärmezählern und Ölstand im selben Zeitraum.'); return; }
@@ -455,7 +455,7 @@ function effizienz(body) {
 // ---------- Einstellungen vs. Verbrauch ----------
 async function einstellungen(body) {
   const ser = S.settingsSeries();
-  const heat = S.sumDaily(heatMaps().map(m => m.daily));
+  const heat = S.totalHeatDaily();
   if (!ser.length && !heat.size) { body.innerHTML = noData('Noch keine Heizungseinstellungen oder Verbräuche erfasst.'); return; }
   const changes = S.settingChanges();
   let temps = null;
