@@ -52,6 +52,15 @@
   </nav>
 
   <div id="toast" role="status" aria-live="polite"></div>
+  <script>
+    // Direkt aus dem Finder geöffnet (file://)? Dann blockiert der Browser die App-Module.
+    if (location.protocol === 'file:') {
+      document.getElementById('view').innerHTML =
+        '<div class="card empty"><strong>Bitte über die Web-Adresse öffnen</strong>' +
+        'Die App funktioniert nicht per Doppelklick auf index.html – der Browser blockiert dann ihre Programmteile.' +
+        '<div class="actions" style="justify-content:center"><a class="btn primary" href="https://bundb-app.github.io/waermezaehler/">Wärmezähler öffnen</a></div></div>';
+    }
+  </script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

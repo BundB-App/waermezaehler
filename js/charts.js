@@ -5,6 +5,7 @@ import * as W from './weather.js';
 import { esc, fmt, fmtAuto, fmtDate, cssVar, kreisFarbe } from './ui.js';
 
 let charts = [];
+let renderSeq = 0; // erkennt, ob nach dem Laden der Wetterdaten noch dieselbe Ansicht offen ist
 const destroyAll = () => { charts.forEach(c => c.destroy()); charts = []; };
 const LS_TAB = 'wz.stats.tab';
 const LS_GRAN = 'wz.stats.gran';
@@ -75,6 +76,7 @@ function noData(msg = 'Für diese Auswertung braucht es mindestens zwei Ablesung
 
 export function renderStats(root) {
   destroyAll();
+  renderSeq++;
   const tab = lsGet(LS_TAB, 'verbrauch');
   root.innerHTML = `
     <div class="scroll-x"><div class="seg" data-tabs>${TABS.map(([k, l]) => `<button data-k="${k}" class="${k === tab ? 'active' : ''}">${l}</button>`).join('')}</div></div>
@@ -289,9 +291,11 @@ async function witterung(body) {
   body.innerHTML = `<div class="card empty">Lade Wetterdaten für ${esc(store.settings().ort)} …</div>`;
   let temps, normal;
   const first = [...daily.keys()].sort()[0];
+  const seq = renderSeq;
   try {
     temps = await W.temperatures(first);
     normal = await W.normalGradtage().catch(() => null);
+    if (seq !== renderSeq || !body.isConnected) return; // inzwischen andere Ansicht gewählt
   } catch (e) {
     body.innerHTML = noData('Wetterdaten konnten nicht geladen werden (Internetverbindung?).');
     return;
@@ -476,7 +480,9 @@ async function einstellungen(body) {
   const changes = S.settingChanges();
   let temps = null;
   const first = [...heat.keys()].sort()[0];
+  const seq = renderSeq;
   if (first) { try { temps = await W.temperatures(first); } catch { /* ohne Witterung */ } }
+  if (seq !== renderSeq || !body.isConnected) return; // inzwischen andere Ansicht gewählt
   const s = store.settings();
   const LBL = { kennlinie: 'Kennlinie Tag', kennlinieNacht: 'Kennlinie Nacht', vorlaufTag: 'Vorlauf Tag', vorlaufNacht: 'Vorlauf Nacht', pumpe: 'Pumpe' };
 
