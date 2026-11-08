@@ -70,6 +70,63 @@ function allDayKeys(maps) {
   maps.forEach(m => m.forEach((_, k) => s.add(k)));
   return [...s];
 }
+// ---------- Zeitraum (gilt für alle Statistik-Tabs) ----------
+const LS_ZEIT = 'wz.stats.zeit';
+const DAYMS = 86400000;
+// Alle Heizperioden (Jul–Jun) von der ersten Aufzeichnung bis heute
+function seasonsAll() {
+  const e = store.eintraege();
+  if (!e.length) return [];
+  const first = S.periodKey(e[0].zeit.slice(0, 10), 'season');
+  const last = S.periodKey(S.dayKey(new Date()), 'season');
+  const out = [];
+  for (let y = +first.slice(0, 4); y <= +last.slice(0, 4); y++) out.push(`${y}/${String(y + 1).slice(2)}`);
+  return out;
+}
+function zeitraum() {
+  let z = lsGet(LS_ZEIT, '12m');
+  if (z.startsWith('hp:') && !seasonsAll().includes(z.slice(3))) z = '12m';
+  const tomorrow = S.dayKey(new Date(Date.now() + DAYMS));
+  if (z === 'all' || z === 'each') return { z, from: '0000', to: '9999', label: 'Gesamt' };
+  if (z === 'd30') return { z, from: S.dayKey(new Date(Date.now() - 30 * DAYMS)), to: tomorrow, label: 'letzte 30 Tage' };
+  if (z.startsWith('hp:')) { const y = +z.slice(3, 7); return { z, from: `${y}-07-01`, to: `${y + 1}-07-01`, label: 'Heizperiode ' + z.slice(3), season: z.slice(3) }; }
+  return { z: '12m', from: S.dayKey(new Date(Date.now() - 365 * DAYMS)), to: tomorrow, label: 'letzte 12 Monate' };
+}
+const inRange = (dk, r) => dk >= r.from && dk < r.to;
+function filterDaily(daily, r) { return new Map([...daily].filter(([k]) => inRange(k, r))); }
+// Auswahlfeld; `einzeln`: zusätzlich „jede Heizperiode als eigenes Diagramm“, `d30`: letzte 30 Tage
+function zeitSelect({ einzeln = false, d30 = false } = {}) {
+  const r = zeitraum();
+  const cur = r.z === 'each' && !einzeln ? 'all' : r.z;
+  const opt = (v, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
+  return `<label class="zeit-select"><span>Zeitraum</span><select data-zeit>
+    ${d30 ? opt('d30', 'Letzte 30 Tage') : ''}${opt('12m', 'Letzte 12 Monate')}${opt('all', 'Gesamt (alle Jahre)')}
+    ${einzeln ? opt('each', 'Jede Heizperiode einzeln') : ''}
+    <optgroup label="Heizperiode (Jul–Jun)">${seasonsAll().reverse().map(y => opt('hp:' + y, 'HP ' + y)).join('')}</optgroup>
+  </select></label>`;
+}
+// Breite Diagramme (viele Balken) werden auf dem Handy seitlich scrollbar statt gequetscht
+function chartBox(n, cls = 'chart tall', px = 9) {
+  return `<div class="chart-scroll"><div class="${cls}" style="width:max(100%, ${Math.round(n * px)}px)"><canvas data-c></canvas></div></div>`;
+}
+
+// Zeitachse auf den gewählten Zeitraum begrenzen (Heizperiode immer ganz zeigen)
+function timeBounds(r) {
+  return r.season ? { min: S.dayDate(r.from).getTime(), max: S.dayDate(r.to).getTime() } : {};
+}
+// Montag einer ISO-Woche „2025-W07“
+function isoMonday(key) {
+  const [y, w] = key.split('-W').map(Number);
+  const jan4 = new Date(y, 0, 4);
+  const mon = new Date(jan4); mon.setDate(jan4.getDate() - ((jan4.getDay() || 7) - 1) + (w - 1) * 7);
+  return mon;
+}
+
+// Hinweis, wenn im gewählten Zeitraum keine Werte liegen
+function leer(r, was = 'Wärmezählerwerte') {
+  return `<div class="card empty"><strong>Keine Daten im Zeitraum</strong>Für ${esc(r.label)} gibt es keine ${was}. Bitte einen anderen Zeitraum wählen.</div>`;
+}
+
 function noData(msg = 'Für diese Auswertung braucht es mindestens zwei Ablesungen.') {
   return `<div class="card empty"><strong>Noch keine Daten</strong>${esc(msg)}</div>`;
 }
@@ -89,6 +146,7 @@ export function renderStats(root) {
   const body = root.querySelector('[data-body]');
   body.addEventListener('change', ev => {
     if (ev.target.closest('[data-split]')) { lsSet('wz.stats.split', ev.target.checked ? '1' : '0'); renderStats(root); }
+    if (ev.target.matches('[data-zeit]')) { lsSet(LS_ZEIT, ev.target.value); renderStats(root); }
   });
   ({ verbrauch, kreise: kreiseTab, jahre, witterung, oel, effizienz, einstellungen })[tab]?.(body);
 }
@@ -98,21 +156,27 @@ function verbrauch(body) {
   const gran = lsGet(LS_GRAN, 'week');
   const mode = lsGet('wz.stats.mode', 'sum');
   const maps = heatMaps();
+  const r = zeitraum();
   const days = allDayKeys(maps.map(m => m.daily));
   if (!days.length) { body.innerHTML = noData(); return; }
-  const limit = { week: 26, month: 24, year: 20, season: 20 }[gran];
-  const keys = S.periodRange(days, gran).slice(-limit);
+  const keys = S.periodRange(days.filter(k => inRange(k, r)), gran);
   const agg = maps.map(m => ({ ...m, agg: S.aggregate(m.daily, gran) }));
+  const each = r.z === 'each';
+  const seasons = each ? seasonsAll().filter(y => days.some(k => S.periodKey(k, 'season') === y)).reverse() : [];
+  const egran = gran === 'week' ? 'week' : 'month'; // für „jede Heizperiode einzeln“
   const val = (a, k) => { const o = a.get(k); if (!o) return null; return mode === 'avg' ? (o.tage > 0 ? o.menge / o.tage : null) : o.menge; };
 
   body.innerHTML = `
     <div class="toolbar">
       <div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div>
       <div class="seg" data-mode><button data-k="sum" class="${mode === 'sum' ? 'active' : ''}">Summe</button><button data-k="avg" class="${mode === 'avg' ? 'active' : ''}">Ø pro Tag</button></div>
+      ${zeitSelect({ einzeln: true })}
       ${splitToggle()}
     </div>
-    <div class="card"><h2>Wärmeverbrauch ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'}</h2><div class="chart tall"><canvas data-c></canvas></div>
-      <p class="muted small">Blassere Balken: Zeitraum nur teilweise durch Ablesungen abgedeckt.</p></div>
+    ${each ? seasons.map(y => `<div class="card"><h2>Heizperiode ${y} ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'}</h2><div class="chart"><canvas data-hp="${y}"></canvas></div></div>`).join('')
+      + `<p class="muted small" style="margin:-4px 2px 12px">Alle Heizperioden mit gleicher Skala – direkt vergleichbar. ${gran === 'week' ? 'Wochen' : 'Monate'} von Juli bis Juni.</p>`
+    : !keys.length ? leer(r) : `<div class="card"><h2>Wärmeverbrauch ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'} · ${esc(r.label)}</h2>${chartBox(keys.length)}
+      <p class="muted small">Blassere Balken: Zeitraum nur teilweise durch Ablesungen abgedeckt.</p></div>`}
     <div class="card"><h2>Tabelle</h2><div class="table-wrap"><table>
       <thead><tr><th>Zeitraum</th>${agg.map(a => `<th>${esc(a.label)}</th>`).join('')}<th>Gesamt</th></tr></thead>
       <tbody>${[...keys].reverse().map(k => {
@@ -124,6 +188,43 @@ function verbrauch(body) {
   body.querySelector('[data-gran]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet(LS_GRAN, b.dataset.k); verbrauch(body); } };
   body.querySelector('[data-mode]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.mode', b.dataset.k); verbrauch(body); } };
 
+  const tooltipFor = (ks, g) => ({
+    ...baseOptions().plugins.tooltip,
+    callbacks: {
+      label: c => `${c.dataset.label}: ${fmtAuto(c.raw)} kWh`,
+      footer: items => {
+        const k = ks[items[0].dataIndex];
+        const tot = items.reduce((s, i) => s + (i.raw || 0), 0);
+        const cov = Math.min(...agg.map(a => (g === gran ? a.agg : S.aggregate(a.daily, g)).get(k)?.abdeckung ?? 0));
+        return `Gesamt: ${fmtAuto(tot)} kWh` + (cov < 0.95 ? `\nnur ${Math.round(cov * 100)} % des Zeitraums abgedeckt` : '');
+      },
+    },
+  });
+  if (!each && !keys.length) return;
+  if (each) {
+    // Eine Grafik je Heizperiode, gleiche y-Achse
+    const eagg = agg.map(a => ({ ...a, agg: S.aggregate(a.daily, egran) }));
+    const per = seasons.map(y => {
+      const y0 = +y.slice(0, 4);
+      return { y, keys: S.periodRange([`${y0}-07-01`, `${y0 + 1}-06-30`], egran) };
+    });
+    let max = 0;
+    for (const p of per) for (const k of p.keys) max = Math.max(max, eagg.reduce((s, a) => s + (val(a.agg, k) || 0), 0));
+    for (const p of per) {
+      chart(canvas(body, `[data-hp="${p.y}"]`), {
+        type: 'bar',
+        data: {
+          labels: p.keys.map(k => S.periodLabel(k, egran).replace(/ ’\d+/, '')),
+          datasets: eagg.map(a => { const c = kreisFarbe(a.idx); return { label: a.label, data: p.keys.map(k => val(a.agg, k)), stack: 's', backgroundColor: p.keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 ? alpha(c, 0.4) : c)), borderRadius: 2, maxBarThickness: 30 }; }),
+        },
+        options: baseOptions({
+          plugins: { legend: { ...baseOptions().plugins.legend, display: p === per[0] }, tooltip: tooltipFor(p.keys, egran) },
+          scales: { x: { ...baseOptions().scales.x, stacked: true }, y: { ...baseOptions().scales.y, stacked: true, max: Math.ceil(max * 1.05) || undefined } },
+        }),
+      });
+    }
+    return;
+  }
   chart(canvas(body, '[data-c]'), {
     type: 'bar',
     data: {
@@ -160,39 +261,32 @@ function verbrauch(body) {
 
 // ---------- Kreise ----------
 function kreiseTab(body) {
-  const range = lsGet('wz.stats.krange', 'season');
   const maps = heatMaps();
   const days = allDayKeys(maps.map(m => m.daily));
   if (!days.length) { body.innerHTML = noData(); return; }
-  const today = S.dayKey(new Date());
-  const curSeason = S.periodKey(today, 'season');
-  const from = {
-    season: curSeason.slice(0, 4) + '-07-01',
-    last: S.dayKey(new Date(Date.now() - 365 * 86400000)),
-    d30: S.dayKey(new Date(Date.now() - 30 * 86400000)),
-    all: '0000',
-  }[range];
+  const r = zeitraum();
+  // Monatsverlauf: bei kurzen Zeiträumen trotzdem mindestens 12 Monate zeigen
+  const lr = r.z === 'd30' || r.z === '12m' ? { from: S.dayKey(new Date(Date.now() - 365 * DAYMS)), to: r.to } : r;
+  const lkeys = S.periodRange(days.filter(k => inRange(k, lr)), 'month');
   const rows = maps.map(m => {
     let menge = 0, tage = 0;
-    for (const [k, v] of m.daily) if (k >= from) { menge += v.menge; tage += v.abdeckung; }
+    for (const [k, v] of m.daily) if (inRange(k, r)) { menge += v.menge; tage += v.abdeckung; }
     return { ...m, menge, proTag: tage ? menge / tage : null };
   });
   const total = rows.reduce((s, r) => s + r.menge, 0);
+  if (!lkeys.length && !total) { body.innerHTML = `<div class="toolbar">${zeitSelect({ d30: true })}${splitToggle()}</div>` + leer(r); return; }
 
   body.innerHTML = `
-    <div class="toolbar"><div class="seg" data-range>
-      ${[['d30', '30 Tage'], ['season', 'Heizperiode ' + curSeason], ['last', '12 Monate'], ['all', 'Gesamt']].map(([k, l]) => `<button data-k="${k}" class="${k === range ? 'active' : ''}">${l}</button>`).join('')}
-    </div>${splitToggle()}</div>
+    <div class="toolbar">${zeitSelect({ d30: true })}${splitToggle()}</div>
     <div class="grid">
-      <div class="card"><h2>Anteile am Wärmeverbrauch</h2><div class="chart"><canvas data-c></canvas></div></div>
+      <div class="card"><h2>Anteile · ${esc(r.label)}</h2><div class="chart"><canvas data-c></canvas></div></div>
       <div class="card"><h2>Kreise im Vergleich</h2><div class="table-wrap"><table>
         <thead><tr><th>Kreis</th><th>kWh</th><th>Anteil</th><th>Ø kWh/Tag</th></tr></thead>
         <tbody>${rows.map(r => `<tr><td><span class="swatch" style="background:${kreisFarbe(r.idx)}"></span>${esc(r.label)}</td><td>${fmtAuto(r.menge)}</td><td>${total ? fmt(r.menge / total * 100, 1) + ' %' : '–'}</td><td>${fmtAuto(r.proTag)}</td></tr>`).join('')}
         <tr><td><b>Gesamt</b></td><td><b>${fmtAuto(total)}</b></td><td></td><td><b>${fmtAuto(rows.reduce((s, r) => s + (r.proTag || 0), 0))}</b></td></tr></tbody>
       </table></div></div>
     </div>
-    <div class="card"><h2>Ø kWh pro Tag je Monat</h2><div class="chart"><canvas data-l></canvas></div></div>`;
-  body.querySelector('[data-range]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.krange', b.dataset.k); kreiseTab(body); } };
+    <div class="card"><h2>Ø kWh pro Tag je Monat</h2><div class="chart-scroll"><div class="chart" style="width:max(100%, ${Math.round(lkeys.length * 16)}px)"><canvas data-l></canvas></div></div></div>`;
 
   chart(canvas(body, '[data-c]'), {
     type: 'doughnut',
@@ -206,7 +300,7 @@ function kreiseTab(body) {
     },
   });
 
-  const keys = S.periodRange(days, 'month').slice(-24);
+  const keys = lkeys;
   chart(canvas(body, '[data-l]'), {
     type: 'line',
     data: {
@@ -247,15 +341,22 @@ function jahre(body) {
     if (!groups.has(g)) groups.set(g, Array(12).fill(null));
     groups.get(g)[idx] = o;
   }
-  const gkeys = [...groups.keys()].sort();
+  const allG = [...groups.keys()].sort();
+  let hidden = [];
+  try { hidden = JSON.parse(lsGet('wz.stats.jhide', '[]')); } catch { /* leer */ }
+  const gkeys = allG.filter(g => !hidden.includes(g));
   const labels = basis === 'season' ? S.MONATE_HP : ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
   const palette = ['--text-3', '--c2', '--c4', '--c3', '--c5', '--c1'];
+  const gColor = g => { const i = allG.indexOf(g); return i === allG.length - 1 ? cssVar('--accent') : cssVar(palette[Math.max(0, palette.length - allG.length + i)] || '--c1'); };
 
   body.innerHTML = `
     <div class="toolbar">
       <div class="seg" data-basis><button data-k="season" class="${basis === 'season' ? 'active' : ''}">Heizperiode (Jul–Jun)</button><button data-k="year" class="${basis === 'year' ? 'active' : ''}">Kalenderjahr</button></div>
       ${seriesSelect(sel)}
     </div>
+    <div class="chips" data-chips><span class="muted small">Anzeigen:</span>
+      ${allG.map(g => `<button type="button" class="chip ${hidden.includes(g) ? '' : 'on'}" data-g="${g}"><i style="background:${gColor(g)}"></i>${basis === 'season' ? 'HP ' : ''}${g}</button>`).join('')}
+      <button type="button" class="chip link" data-g="*">${hidden.length ? 'alle' : 'keine'}</button></div>
     <div class="card"><h2>Monatsverbrauch im Vergleich (${unit})</h2><div class="chart tall"><canvas data-c></canvas></div></div>
     <div class="card"><h2>Kumuliert</h2><div class="chart"><canvas data-k></canvas></div></div>
     <div class="card"><h2>Summen</h2><div class="table-wrap"><table>
@@ -268,15 +369,21 @@ function jahre(body) {
       <p class="muted small">Für einen fairen Vergleich unterschiedlich kalter Jahre siehe „Witterung“.</p></div>`;
   body.querySelector('[data-basis]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.jbasis', b.dataset.k); jahre(body); } };
   body.querySelector('[data-sel]').onchange = ev => { lsSet('wz.stats.jsel', ev.target.value); jahre(body); };
+  body.querySelector('[data-chips]').onclick = ev => {
+    const b = ev.target.closest('[data-g]'); if (!b) return;
+    const g = b.dataset.g;
+    const next = g === '*' ? (hidden.length ? [] : [...allG]) : hidden.includes(g) ? hidden.filter(x => x !== g) : [...hidden, g];
+    lsSet('wz.stats.jhide', JSON.stringify(next)); destroyAll(); jahre(body);
+  };
 
-  const ds = (cum) => gkeys.map((g, i) => {
-    const col = cssVar(palette[Math.max(0, palette.length - gkeys.length + i)] || '--c1');
-    const isLast = i === gkeys.length - 1;
+  const ds = (cum) => gkeys.map(g => {
+    const col = gColor(g);
+    const isLast = g === allG.at(-1);
     let acc = 0;
     const data = groups.get(g).map(o => { if (!cum) return o ? o.menge : null; if (!o) return null; acc += o.menge; return acc; });
     return cum
       ? { label: g, data, borderColor: col, backgroundColor: col, borderWidth: isLast ? 3 : 2, tension: .25, spanGaps: true, pointRadius: 2 }
-      : { label: g, data, backgroundColor: isLast ? cssVar('--accent') : col, borderRadius: 3, maxBarThickness: 22 };
+      : { label: g, data, backgroundColor: col, borderRadius: 3, maxBarThickness: 22 };
   });
   const tt = { ...baseOptions().plugins, tooltip: { ...baseOptions().plugins.tooltip, callbacks: { label: c => `${c.dataset.label}: ${fmtAuto(c.raw)} ${unit}` } } };
   chart(canvas(body, '[data-c]'), { type: 'bar', data: { labels, datasets: ds(false) }, options: baseOptions({ plugins: tt }) });
@@ -308,7 +415,8 @@ async function witterung(body) {
   const mGt = S.aggregate(gt, 'month');
   const mT = new Map();
   for (const [k, t] of temps) { const m = k.slice(0, 7); const o = mT.get(m) || { s: 0, n: 0 }; o.s += t; o.n++; mT.set(m, o); }
-  const months = [...mVal.keys()].sort().slice(-24);
+  const r = zeitraum();
+  const months = [...mVal.keys()].sort().filter(m => m + '-31' >= r.from && m + '-01' < r.to);
   const rows = months.map(m => {
     const v = mVal.get(m), g = mGt.get(m);
     // Gradtage nur für abgedeckte Tage zählen
@@ -324,12 +432,14 @@ async function witterung(body) {
   const wVal = S.aggregate(daily, 'week');
   const wT = new Map();
   for (const [k, t] of temps) { const w = S.periodKey(k, 'week'); const o = wT.get(w) || { s: 0, n: 0 }; o.s += t; o.n++; wT.set(w, o); }
-  const pts = [...wVal].filter(([w, o]) => o.tage >= 3 && wT.get(w)).map(([w, o]) => ({ x: wT.get(w).s / wT.get(w).n, y: o.menge / o.tage, w }));
+  const inR = w => { const d = S.dayKey(isoMonday(w)); return d >= r.from && d < r.to; };
+  const pts = [...wVal].filter(([w, o]) => o.tage >= 3 && wT.get(w) && inR(w)).map(([w, o]) => ({ x: wT.get(w).s / wT.get(w).n, y: o.menge / o.tage, w }));
 
   body.innerHTML = `
-    <div class="toolbar">${seriesSelect(sel)}</div>
+    <div class="toolbar">${seriesSelect(sel)}${zeitSelect()}</div>
     <div class="notice">Witterungsbereinigung nach Gradtagen (VDI 3807, G ${s.innentemp}/${s.heizgrenze}): Je kälter, desto mehr Gradtage. <b>${unit} pro Gradtag</b> ist damit über milde und kalte Monate vergleichbar.${normal ? ` „Bereinigt“ rechnet auf ein durchschnittliches Jahr (${normal.jahre}) für ${esc(s.ort)} um.` : ''}</div>
-    <div class="card"><h2>${unit} pro Gradtag und Außentemperatur</h2><div class="chart tall"><canvas data-c></canvas></div></div>
+    ${!rows.length ? leer(r, 'Verbrauchswerte') : ''}
+    <div class="card" ${!rows.length ? 'hidden' : ''}><h2>${unit} pro Gradtag und Außentemperatur · ${esc(r.label)}</h2>${chartBox(rows.length, 'chart tall', 22)}</div>
     <div class="card"><h2>Energiesignatur (Wochen)</h2><div class="chart"><canvas data-s></canvas></div>
       <p class="muted small">Jeder Punkt ist eine Woche: Ø Außentemperatur gegen Ø Verbrauch pro Tag. Liegen neue Punkte unter der alten Wolke, heizt ihr effizienter.</p></div>
     <div class="card"><h2>Monate</h2><div class="table-wrap"><table>
@@ -362,7 +472,7 @@ async function witterung(body) {
     type: 'scatter',
     data: { datasets: [{
       label: 'Wochen', data: pts,
-      backgroundColor: pts.map(p => { const [y, w] = p.w.split('-W').map(Number); const age = (now - new Date(y, 0, 1 + (w - 1) * 7)) / (365 * 86400000); return alpha(cssVar('--accent'), age < 0.5 ? 0.95 : age < 1.2 ? 0.55 : 0.25); }),
+      backgroundColor: pts.map(p => { const age = (now - isoMonday(p.w)) / (365 * 86400000); return alpha(cssVar('--accent'), age < 0.5 ? 0.95 : age < 1.2 ? 0.55 : 0.25); }),
       pointRadius: 5, pointHoverRadius: 7,
     }] },
     options: baseOptions({
@@ -383,7 +493,9 @@ function oel(body) {
   const daily = S.oilDaily();
   const fc = S.oilForecast();
   const gran = lsGet('wz.stats.ogran', 'week');
-  const keys = S.periodRange([...daily.keys()], gran).slice(-({ week: 26, month: 24, year: 20, season: 20 }[gran]));
+  const r = zeitraum();
+  const keys = S.periodRange([...daily.keys()].filter(k => inRange(k, r)), gran);
+  const lpts = pts.filter(p => inRange(S.dayKey(p.t), r));
   const agg = S.aggregate(daily, gran);
   const fills = store.eintraege('betankung');
   const priced = fills.filter(f => f.preis && f.liter);
@@ -397,8 +509,8 @@ function oel(body) {
       <div class="kpi"><div class="label">Reicht bis ca.</div><div class="value" style="font-size:18px">${fc.leerAm ? fc.leerAm.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' }) : '–'}</div><div class="muted small">bei gleichbleibendem Verbrauch</div></div>
       ${literpreis ? `<div class="kpi"><div class="label">Ø Literpreis</div><div class="value">${fmt(literpreis, 2)}<span class="unit">€/L</span></div><div class="muted small">≈ ${fmt(fc.proWoche * literpreis, 0)} € pro Woche</div></div>` : ''}
     </div></div>
-    <div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div></div>
-    <div class="card"><h2>Ölverbrauch (Liter)</h2><div class="chart"><canvas data-c></canvas></div></div>
+    <div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div>${zeitSelect()}</div>
+    <div class="card"><h2>Ölverbrauch (Liter) · ${esc(r.label)}</h2>${chartBox(keys.length, 'chart')}</div>
     <div class="card"><h2>Füllstand</h2><div class="chart"><canvas data-l></canvas></div></div>
     ${fills.length ? `<div class="card"><h2>Betankungen</h2><div class="table-wrap"><table><thead><tr><th>Datum</th><th>Liter</th><th>Preis</th><th>€/L</th></tr></thead><tbody>
       ${[...fills].reverse().map(f => `<tr><td>${fmtDate(S.parseZeit(f.zeit), false)}</td><td>${fmt(f.liter)}</td><td>${f.preis ? fmt(f.preis, 2) + ' €' : '–'}</td><td>${f.preis ? fmt(f.preis / f.liter, 3) : '–'}</td></tr>`).join('')}
@@ -414,12 +526,12 @@ function oel(body) {
   chart(canvas(body, '[data-l]'), {
     type: 'line',
     data: { datasets: [
-      { label: 'Ölstand', data: pts.map(p => ({ x: p.t, y: p.v })), borderColor: cssVar('--oil'), backgroundColor: alpha(cssVar('--oil'), .12), fill: true, stepped: false, pointRadius: 2, tension: 0 },
-      { label: 'Betankung', type: 'scatter', data: fills.map(f => ({ x: S.parseZeit(f.zeit), y: f.liter })), backgroundColor: cssVar('--accent'), pointStyle: 'triangle', pointRadius: 7 },
+      { label: 'Ölstand', data: lpts.map(p => ({ x: p.t, y: p.v })), borderColor: cssVar('--oil'), backgroundColor: alpha(cssVar('--oil'), .12), fill: true, stepped: false, pointRadius: 2, tension: 0 },
+      { label: 'Betankung', type: 'scatter', data: fills.filter(f => inRange(f.zeit.slice(0, 10), r)).map(f => ({ x: S.parseZeit(f.zeit), y: f.liter })), backgroundColor: cssVar('--accent'), pointStyle: 'triangle', pointRadius: 7 },
     ] },
     options: baseOptions({
       plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { title: i => fmtDate(i[0].raw.x, false), label: c => c.dataset.label === 'Betankung' ? `getankt ${fmt(c.raw.y)} L` : `${fmt(c.raw.y)} L` } } },
-      scales: { x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy', displayFormats: { month: 'MM.yy', quarter: 'MM.yy', year: 'yyyy', week: 'dd.MM.', day: 'dd.MM.' } }, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 16 } }, y: { ...o.scales.y, ...(tank ? { max: tank } : {}) } },
+      scales: { x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy', displayFormats: { month: 'MM.yy', quarter: 'MM.yy', year: 'yyyy', week: 'dd.MM.', day: 'dd.MM.' } }, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 16 }, ...timeBounds(r) }, y: { ...o.scales.y, ...(tank ? { max: tank } : {}) } },
     }),
   });
 }
@@ -435,21 +547,23 @@ function effizienz(body) {
   const both = [...heat.keys()].filter(k => oil.has(k));
   const h = new Map(both.map(k => [k, heat.get(k)])), o2 = new Map(both.map(k => [k, oil.get(k)]));
   const ah = S.aggregate(h, gran), ao = S.aggregate(o2, gran);
-  const keys = S.periodRange(both, gran).slice(-24);
+  const r = zeitraum();
+  const keys = S.periodRange(both.filter(k => inRange(k, r)), gran);
   const rows = keys.map(k => {
     const w = ah.get(k)?.menge, l = ao.get(k)?.menge;
     return { k, w, l, oelKwh: l ? l * f : null, grad: w && l ? w / (l * f) : null, abdeckung: Math.min(ah.get(k)?.abdeckung ?? 0, ao.get(k)?.abdeckung ?? 0) };
   });
+  if (!keys.length) { body.innerHTML = `<div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div>${zeitSelect()}</div>` + leer(r, 'gemeinsamen Wärme- und Öldaten'); body.querySelector('[data-gran]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.egran', b.dataset.k); effizienz(body); } }; return; }
   const totW = rows.reduce((s, r) => s + (r.w || 0), 0), totL = rows.reduce((s, r) => s + (r.l || 0), 0);
 
   body.innerHTML = `
-    <div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div>${zeitSelect()}</div>
     <div class="card"><div class="kpis">
-      <div class="kpi"><div class="label">Nutzungsgrad gesamt</div><div class="value">${totL ? fmt(totW / (totL * f) * 100, 0) : '–'}<span class="unit">%</span></div></div>
+      <div class="kpi"><div class="label">Nutzungsgrad · ${esc(r.label)}</div><div class="value">${totL ? fmt(totW / (totL * f) * 100, 0) : '–'}<span class="unit">%</span></div></div>
       <div class="kpi"><div class="label">Wärme gemessen</div><div class="value">${fmtAuto(totW)}<span class="unit">kWh</span></div></div>
       <div class="kpi"><div class="label">Öl eingesetzt</div><div class="value">${fmtAuto(totL)}<span class="unit">L</span></div><div class="muted small">≈ ${fmtAuto(totL * f)} kWh (${fmt(f, 1)} kWh/L)</div></div>
     </div></div>
-    <div class="card"><h2>Nutzungsgrad (gemessene Wärme ÷ Energie im Öl)</h2><div class="chart"><canvas data-c></canvas></div>
+    <div class="card"><h2>Nutzungsgrad (gemessene Wärme ÷ Energie im Öl)</h2>${chartBox(keys.length, 'chart', gran === 'week' ? 9 : 22)}
       <p class="muted small">Die Differenz sind Kessel-, Abgas- und Leitungsverluste sowie Wärme, die an keinem Zähler vorbeikommt (z. B. Warmwasser ohne Zähler). Werte über 100 % deuten auf Ablesefehler oder einen zu niedrigen Heizwert hin (Einstellungen).</p></div>
     <div class="card"><div class="table-wrap"><table><thead><tr><th>Zeitraum</th><th>Wärme kWh</th><th>Öl L</th><th>Öl kWh</th><th>Nutzungsgrad</th></tr></thead><tbody>
       ${[...rows].reverse().map(r => `<tr><td>${S.periodLabel(r.k, gran)}${r.abdeckung < .95 ? ' *' : ''}</td><td>${fmtAuto(r.w)}</td><td>${fmtAuto(r.l)}</td><td>${fmtAuto(r.oelKwh)}</td><td>${r.grad !== null ? fmt(r.grad * 100, 0) + ' %' : '–'}</td></tr>`).join('')}
@@ -477,7 +591,9 @@ async function einstellungen(body) {
   const ser = S.settingsSeries();
   const heat = S.totalHeatDaily();
   if (!ser.length && !heat.size) { body.innerHTML = noData('Noch keine Heizungseinstellungen oder Verbräuche erfasst.'); return; }
-  const changes = S.settingChanges();
+  const r = zeitraum();
+  const changes = S.settingChanges().filter(c => inRange(S.dayKey(c.t), r));
+  const serR = ser.filter(p => inRange(S.dayKey(p.t), r));
   let temps = null;
   const first = [...heat.keys()].sort()[0];
   const seq = renderSeq;
@@ -499,7 +615,8 @@ async function einstellungen(body) {
   };
 
   body.innerHTML = `
-    <div class="card"><h2>Heizungseinstellungen und Wärmeverbrauch</h2><div class="chart tall"><canvas data-c></canvas></div>
+    <div class="toolbar">${zeitSelect()}</div>
+    <div class="card"><h2>Heizungseinstellungen und Wärmeverbrauch · ${esc(r.label)}</h2>${chartBox(Math.ceil((Date.parse(r.to === '9999' ? new Date() : r.to) - Date.parse(r.from === '0000' ? (first || S.dayKey(new Date())) : r.from)) / (7 * DAYMS)))}
       <p class="muted small">Balken: Ø Wärmeverbrauch aller Kreise pro Tag (Woche). Linien: Vorlauftemperaturen, Kennlinien Tag/Nacht und Pumpenstufe (rechte Achse).</p></div>
     <div class="card"><h2>Änderungen und ihre Wirkung</h2>
       ${changes.length ? `<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Änderung</th>${temps ? '<th>kWh/Gt vorher</th><th>nachher</th><th>Δ</th>' : ''}</tr></thead><tbody>
@@ -508,12 +625,11 @@ async function einstellungen(body) {
     </div>`;
 
   const wk = S.aggregate(heat, 'week');
-  const bars = [...wk].filter(([, o]) => o.tage >= 2).map(([k, o]) => {
-    const [y, w] = k.split('-W').map(Number);
-    const jan4 = new Date(y, 0, 4); const mon = new Date(jan4); mon.setDate(jan4.getDate() - ((jan4.getDay() || 7) - 1) + (w - 1) * 7 + 3);
+  const bars = [...wk].filter(([k, o]) => o.tage >= 2 && inRange(S.dayKey(isoMonday(k)), r)).map(([k, o]) => {
+    const mon = isoMonday(k); mon.setDate(mon.getDate() + 3);
     return { x: mon, y: o.menge / o.tage };
   }).sort((a, b) => a.x - b.x);
-  const line = (k, col, dash) => ({ type: 'line', label: LBL[k], data: ser.filter(p => Number.isFinite(p[k])).map(p => ({ x: p.t, y: p[k] })), borderColor: col, backgroundColor: col, stepped: 'before', pointRadius: 2, borderWidth: 2, borderDash: dash, yAxisID: 'y2' });
+  const line = (k, col, dash) => ({ type: 'line', label: LBL[k], data: serR.filter(p => Number.isFinite(p[k])).map(p => ({ x: p.t, y: p[k] })), borderColor: col, backgroundColor: col, stepped: 'before', pointRadius: 2, borderWidth: 2, borderDash: dash, yAxisID: 'y2' });
   const o = baseOptions();
   chart(canvas(body, '[data-c]'), {
     data: { datasets: [
@@ -523,7 +639,7 @@ async function einstellungen(body) {
     options: baseOptions({
       plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { title: i => fmtDate(i[0].raw.x, false), label: c => `${c.dataset.label}: ${fmt(c.raw.y, c.dataset.yAxisID === 'y' ? 1 : (c.raw.y % 1 ? 1 : 0))}` } } },
       scales: {
-        x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy', displayFormats: { month: 'MM.yy', quarter: 'MM.yy', year: 'yyyy', week: 'dd.MM.', day: 'dd.MM.' } }, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 16 } },
+        x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy', displayFormats: { month: 'MM.yy', quarter: 'MM.yy', year: 'yyyy', week: 'dd.MM.', day: 'dd.MM.' } }, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 16 }, ...timeBounds(r) },
         y: { ...o.scales.y, title: { display: true, text: 'kWh/Tag' } },
         y2: { position: 'right', grid: { display: false }, border: { display: false }, beginAtZero: true, title: { display: true, text: '°C / Stufe' } },
       },

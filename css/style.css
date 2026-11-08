@@ -262,3 +262,16 @@ ol.steps { padding-left: 20px; } ol.steps li { margin-bottom: 6px; }
 .alert span { color: var(--text-2, inherit); }
 .alert-foot { margin: -4px 2px 12px; }
 .field [data-erw] { font-size: 12px; }
+
+/* Zeitraum-Auswahl & breite Diagramme */
+.zeit-select { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-3); }
+.zeit-select select { width: auto; font-size: 15px; padding: 7px 30px 7px 12px; font-weight: 600; color: var(--text); }
+.chart-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -4px 0 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-3);
+  border-radius: 999px; padding: 5px 11px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.chip i { width: 9px; height: 9px; border-radius: 50%; opacity: .35; }
+.chip.on { color: var(--text); border-color: var(--text-3); }
+.chip.on i { opacity: 1; }
+.chip.link { border: none; background: none; text-decoration: underline; padding: 5px 4px; }
