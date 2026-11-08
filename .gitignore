@@ -5,3 +5,4 @@ waermezaehler-daten*.json
 import/
 Import/
 *.pdf
+*.webloc
