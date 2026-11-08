@@ -1,8 +1,8 @@
 // Offline-Fähigkeit: App-Dateien „network first“ (Updates kommen sofort an), Bibliotheken „cache first“.
-const CACHE = 'wz-v8';
+const CACHE = 'wz-v9';
 const APP = [
   './', 'index.html', 'css/style.css', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png',
-  'js/app.js', 'js/store.js', 'js/dropbox.js', 'js/config.js', 'js/stats.js', 'js/weather.js', 'js/charts.js', 'js/forms.js', 'js/csv.js', 'js/ui.js',
+  'js/app.js', 'js/store.js', 'js/dropbox.js', 'js/config.js', 'js/stats.js', 'js/weather.js', 'js/charts.js', 'js/forms.js', 'js/csv.js', 'js/ui.js', 'js/warnings.js',
 ];
 const LIBS = [
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',

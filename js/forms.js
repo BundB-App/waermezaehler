@@ -1,6 +1,7 @@
 // Formulare: Ablesung, Betankung, Zählerwechsel (für Neu-Anlage und Bearbeiten)
 import * as store from './store.js';
 import { parseZeit } from './stats.js';
+import * as WARN from './warnings.js';
 import { esc, fmt, fmtAuto, fmtAgo, parseNum, numStr, nowLocal, toast, confirmDialog } from './ui.js';
 
 const HEIZ = ['vorlaufTag', 'vorlaufNacht', 'kennlinie', 'kennlinieNacht', 'pumpe'];
@@ -57,7 +58,7 @@ export function formHtml(typ, e = null) {
     const val = e?.werte?.[k.id];
     return `<label class="field" data-kreis="${k.id}"><span>${esc(k.name)} (kWh)</span>
       <input name="k:${k.id}" inputmode="decimal" value="${numStr(val)}" placeholder="${prev ? fmt(prev.v, prev.v % 1 ? 1 : 0) : ''}" autocomplete="off">
-      <span class="hint" data-hint>${prev ? `zuletzt ${fmtAuto(prev.v)} · ${fmtAgo(parseZeit(prev.e.zeit))}` : 'erste Ablesung'}</span></label>`;
+      <span class="hint" data-hint>${prev ? `zuletzt ${fmtAuto(prev.v)} · ${fmtAgo(parseZeit(prev.e.zeit))}` : 'erste Ablesung'}</span><span data-erw></span></label>`;
   }).join('');
   const prevOil = lastBefore(e?.zeit, x => x.oel, e?.id);
   const pre = k => (e ? e[k] : lastBefore(null, x => x[k])?.v);
@@ -78,7 +79,7 @@ export function formHtml(typ, e = null) {
     <div class="fields">
       <label class="field" data-oel><span>Ölstand (Liter)</span>
         <input name="oel" inputmode="decimal" value="${numStr(e?.oel)}" placeholder="${prevOil ? fmt(prevOil.v) : ''}" autocomplete="off">
-        <span class="hint" data-hint>${prevOil ? `zuletzt ${fmt(prevOil.v)} L · ${fmtAgo(parseZeit(prevOil.e.zeit))}` : ''}</span></label>
+        <span class="hint" data-hint>${prevOil ? `zuletzt ${fmt(prevOil.v)} L · ${fmtAgo(parseZeit(prevOil.e.zeit))}` : ''}</span><span data-erw></span></label>
     </div>
     <div class="section-title">Heizung</div>
     <div class="fields">
@@ -144,12 +145,33 @@ export function bindForm(root, e, onDone) {
       const curO = parseNum(form.elements.oel.value);
       if (prevO && curO !== null) {
         const h = of.querySelector('[data-hint]');
-        const d = prevO.v - curO;
+        const getankt = store.eintraege('betankung').filter(b => b.zeit > prevO.e.zeit && (!zeit || b.zeit <= zeit)).reduce((s, b) => s + (b.liter || 0), 0);
+        const d = prevO.v + getankt - curO;
         h.className = 'hint';
-        h.textContent = d >= 0 ? `−${fmt(d)} L · letzte Ablesung ${fmtAgo(parseZeit(prevO.e.zeit))}` : `+${fmt(-d)} L – bitte Betankung erfassen`;
+        h.textContent = d >= 0 ? `−${fmt(d)} L${getankt ? ` (inkl. ${fmt(getankt)} L getankt)` : ''} · letzte Ablesung ${fmtAgo(parseZeit(prevO.e.zeit))}` : `+${fmt(-d)} L – bitte Betankung erfassen`;
       }
     };
-    form.addEventListener('input', () => { markChanged(); checkValues(); });
+    // Wetterbereinigte Erwartung (nur bei neuen Ablesungen): Temperaturen einmal laden, dann bei jeder Eingabe rechnen
+    let temps = null, timer = 0;
+    const checkErwartung = () => {
+      if (!temps || e || store.settings().warnAktiv === false) return;
+      const f = form.elements;
+      const extra = { t: parseZeit(f.zeit.value || ''), werte: {}, oel: parseNum(f.oel.value) ?? undefined };
+      store.kreise().forEach(k => { const v = parseNum(f['k:' + k.id].value); if (v !== null) extra.werte[k.id] = v; });
+      if (isNaN(extra.t)) return;
+      let r; try { r = WARN.analyse(temps, extra, { waermeTage: 3 }); } catch { return; }
+      const show = (el, res, label) => {
+        if (!el) return;
+        if (!res || res.status !== 'ok' || !(res.t1 >= extra.t)) { el.className = ''; el.textContent = ''; return; }
+        const hoch = res.abw >= r.schwelle, tief = res.abw <= -0.5;
+        el.className = hoch || tief ? 'warn-text' : 'hint';
+        el.textContent = `${WARN.pct(res.abw)} ggü. Erwartung bei diesem Wetter (${label})` + (hoch ? ' – ungewöhnlich hoch' : tief ? ' – Tippfehler?' : '');
+      };
+      for (const { k, res } of r.waerme) show(form.querySelector(`[data-kreis="${k.id}"] [data-erw]`), Number.isFinite(extra.werte[k.id]) ? res : null, `${Math.round(res.tage || 0)} Tage`);
+      show(form.querySelector('[data-oel] [data-erw]'), Number.isFinite(extra.oel) ? r.oel : null, `${Math.round(r.oel.tage || 0)} Tage`);
+    };
+    if (!e) WARN.loadTemps().then(t => { temps = t; checkErwartung(); }).catch(() => {});
+    form.addEventListener('input', () => { markChanged(); checkValues(); clearTimeout(timer); timer = setTimeout(checkErwartung, 250); });
     markChanged(); checkValues();
   }
 

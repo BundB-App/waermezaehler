@@ -18,6 +18,10 @@ export const DEFAULT_SETTINGS = {
   tankvolumen: null,
   kennlinieMin: 10,
   kennlinieMax: 25,
+  warnAktiv: true,
+  warnSchwelle: 25,
+  warnTage: 14,
+  ngSchwelle: 10,
   geaendert: 0,
 };
 

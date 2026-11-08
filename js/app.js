@@ -3,6 +3,7 @@ import * as store from './store.js';
 import * as dbx from './dropbox.js';
 import * as S from './stats.js';
 import * as W from './weather.js';
+import * as WARN from './warnings.js';
 import { formHtml, bindForm } from './forms.js';
 import { renderStats, destroyCharts } from './charts.js';
 import { importDialog, exportCsv } from './csv.js';
@@ -107,6 +108,7 @@ function home() {
         <div class="muted small">${lastAbl ? fmtAgo(S.parseZeit(lastAbl.zeit)) + (lastAbl.von ? ' · ' + esc(lastAbl.von) : '') : ''}</div></div>
         <button class="btn primary" data-go="add" data-typ="ablesung">+ Ablesung</button></div>
     </div>
+    <div data-warn></div>
     <div class="grid">
       <div class="card"><h2>Ø Wärme pro Tag</h2>
         <table><thead><tr><th>Kreis</th><th>7 Tage</th><th>30 Tage</th></tr></thead><tbody>
@@ -131,6 +133,8 @@ function home() {
       <div class="actions"><button class="btn small" data-go="stats">Alle Auswertungen →</button></div></div>
     ${!dbx.isConnected() ? `<div class="notice">Die Daten liegen bisher nur auf diesem Gerät. <a href="#settings" data-go="settings">Mit Dropbox verbinden</a></div>` : ''}`;
 
+  renderWarnungen(view.querySelector('[data-warn]'));
+
   // Mini-Diagramm
   const days = new Set(); maps.forEach(m => m.daily.forEach((_, k) => days.add(k)));
   const keys = S.periodRange([...days], 'week').slice(-12);
@@ -144,6 +148,26 @@ function home() {
   });
 }
 let miniChart = null;
+
+// Warnsystem: Verbrauch im Vergleich zum Wetter (lädt Temperaturen nach, daher asynchron)
+async function renderWarnungen(el) {
+  if (!el || store.settings().warnAktiv === false) return;
+  let r;
+  try { r = WARN.analyse(await WARN.loadTemps()); } catch { return; }
+  if (!el.isConnected) return;
+  if (r.warnungen.length) {
+    el.innerHTML = r.warnungen.map(w => `<div class="alert ${w.level}"><strong>${esc(w.titel)}</strong><span>${esc(w.text)}</span></div>`).join('')
+      + `<p class="muted small alert-foot">Vergleich mit dem Verbrauch der letzten 12 Monate bei ähnlichem Wetter · Schwelle ${store.settings().warnSchwelle} % · <a href="#settings" data-go="settings">Einstellungen</a></p>`;
+    return;
+  }
+  const chips = [];
+  for (const { k, res } of r.waerme) if (res.status === 'ok') chips.push(`${esc(k.name)} ${WARN.pct(res.abw)}`);
+  if (r.oel.status === 'ok') chips.push(`Öl ${WARN.pct(r.oel.abw)}`);
+  if (r.ng.status === 'ok') chips.push(`Nutzungsgrad ${Math.round(r.ng.ng * 100)} %`);
+  const sommer = r.waerme.some(x => x.res.status === 'sommer');
+  if (chips.length) el.innerHTML = `<div class="alert ok"><strong>Verbrauch passt zum Wetter</strong><span>${chips.join(' · ')}</span></div>`;
+  else if (sommer) el.innerHTML = `<div class="alert ok"><strong>Keine Verbrauchsprüfung</strong><span>Zu warm – kaum Heizbedarf.</span></div>`;
+}
 
 // ---------- Erfassen ----------
 function add() {
@@ -272,6 +296,18 @@ function settings() {
       <div class="actions" style="margin-top:4px"><button class="btn primary" data-savesettings>Speichern</button></div>
     </div>
 
+    <div class="section-title">Warnungen</div>
+    <div class="card stack">
+      <label class="switch" style="margin-left:0"><input type="checkbox" name="warnAktiv" ${s.warnAktiv !== false ? 'checked' : ''}><span class="track"></span><span class="switch-label">Verbrauch prüfen<small>Warnung auf der Übersicht und beim Erfassen</small></span></label>
+      <div class="fields">
+        <label class="field"><span>Warnen ab (% mehr)</span><input name="warnSchwelle" inputmode="numeric" value="${s.warnSchwelle ?? 25}"></label>
+        <label class="field"><span>Zeitraum Wärme (Tage)</span><input name="warnTage" inputmode="numeric" value="${s.warnTage ?? 14}"><span class="hint">Öl immer 28 Tage</span></label>
+        <label class="field"><span>Nutzungsgrad-Abfall (%-Punkte)</span><input name="ngSchwelle" inputmode="numeric" value="${s.ngSchwelle ?? 10}"></label>
+      </div>
+      <p class="muted small">Die App lernt aus den letzten 12 Monaten, wie viel Wärme und Öl ihr bei welcher Außentemperatur braucht (Grundlast + Heizgradtage unter der Heizgrenze). Liegt der Verbrauch im gewählten Zeitraum um mehr als die Schwelle darüber, gibt es eine Warnung. Geprüft wird nur bei Heizbedarf (Ø kälter als etwa 10 °C).</p>
+      <div class="actions" style="margin-top:4px"><button class="btn primary" data-savesettings>Speichern</button></div>
+    </div>
+
     <div class="section-title">Daten</div>
     <div class="card stack">
       <div class="actions" style="margin-top:0">
@@ -361,16 +397,19 @@ function settings() {
     } catch { toast('Ortssuche nicht erreichbar.', true); }
   };
 
-  $('[data-savesettings]').onclick = () => {
+  view.querySelectorAll('[data-savesettings]').forEach(b => b.onclick = () => {
     const n = (name, d) => parseNum(inp(name).value) ?? d;
     const min = Math.round(n('kennlinieMin', 10)), max = Math.round(n('kennlinieMax', 25));
     store.saveSettings({
       heizgrenze: n('heizgrenze', 15), innentemp: n('innentemp', 20),
       oelKwhProLiter: n('oelKwhProLiter', 10), tankvolumen: n('tankvolumen', null),
       kennlinieMin: Math.min(min, max), kennlinieMax: Math.max(min, max),
+      warnAktiv: inp('warnAktiv').checked,
+      warnSchwelle: Math.max(5, n('warnSchwelle', 25)), warnTage: Math.max(5, Math.round(n('warnTage', 14))),
+      ngSchwelle: Math.max(1, n('ngSchwelle', 10)),
     });
     toast('Gespeichert');
-  };
+  });
 
   // Daten
   $('[data-csv]').onchange = async e => { const f = e.target.files[0]; if (f) importDialog(await f.text()); e.target.value = ''; };

@@ -51,6 +51,7 @@ export function heatPoints(kreisId) {
       offset = base - (e.startstand || 0);
     }
   }
+  pts.offset = offset; // für noch nicht gespeicherte Ablesungen (Warnsystem)
   return pts;
 }
 function pointsToIntervals(pts) {
