@@ -13,22 +13,33 @@ function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x
 function nextDay(d) { const x = new Date(d); x.setDate(x.getDate() + 1); x.setHours(0, 0, 0, 0); return x; }
 
 // Verteilt Intervalle {t0, t1, menge} auf Kalendertage. Ergebnis: Map Tag → {menge, abdeckung (0..1)}
+// Mit `form` (Tages-Map) wird nicht gleichmäßig, sondern im Verhältnis dieser Werte verteilt (z. B. Ölverbrauch);
+// die Tage bekommen dann `geschaetzt: true`.
 export function distribute(intervals) {
   const out = new Map();
-  for (const { t0, t1, menge } of intervals) {
+  for (const { t0, t1, menge, form } of intervals) {
     const span = t1 - t0;
     if (span <= 0) continue;
+    const pieces = [];
     let cur = new Date(t0);
     while (cur < t1) {
       const dayStart = startOfDay(cur);
       const end = new Date(Math.min(nextDay(cur), t1));
-      const part = end - cur;
+      const dayLen = nextDay(dayStart) - dayStart;
       const k = dayKey(dayStart);
-      const o = out.get(k) || { menge: 0, abdeckung: 0 };
-      o.menge += menge * (part / span);
-      o.abdeckung += part / (nextDay(dayStart) - dayStart);
-      out.set(k, o);
+      const part = end - cur;
+      pieces.push({ k, part, dayLen, w: form ? (form.get(k)?.menge || 0) * part / dayLen : part });
       cur = end;
+    }
+    let sumW = pieces.reduce((s, p) => s + p.w, 0);
+    const geformt = form && sumW > 0;
+    if (!geformt) { pieces.forEach(p => { p.w = p.part; }); sumW = span; }
+    for (const p of pieces) {
+      const o = out.get(p.k) || { menge: 0, abdeckung: 0 };
+      o.menge += menge * (p.w / sumW);
+      o.abdeckung += p.part / p.dayLen;
+      if (geformt) o.geschaetzt = true;
+      out.set(p.k, o);
     }
   }
   return out;
@@ -49,24 +60,42 @@ export function heatPoints(kreisId) {
       if (Number.isFinite(e.endstand)) pts.push({ t, v: e.endstand + offset, roh: e.endstand, id: e.id, wechsel: true });
       const base = Number.isFinite(e.endstand) ? e.endstand + offset : (pts.at(-1)?.v ?? 0);
       offset = base - (e.startstand || 0);
+      // Endstand des alten Zählers unbekannt: Verbrauch bis zum Wechsel ist unbekannt → Lücke,
+      // ab dem Wechsel zählt der neue Zähler ab seinem Startstand.
+      if (!Number.isFinite(e.endstand) && pts.length) pts.push({ t, v: base, roh: e.startstand || 0, id: e.id, wechsel: true, luecke: true });
     }
   }
   pts.offset = offset; // für noch nicht gespeicherte Ablesungen (Warnsystem)
   return pts;
 }
-function pointsToIntervals(pts) {
+export function pointsToIntervals(pts) {
   const iv = [];
-  for (let i = 1; i < pts.length; i++) iv.push({ t0: pts[i - 1].t, t1: pts[i].t, menge: pts[i].v - pts[i - 1].v });
+  for (let i = 1; i < pts.length; i++) if (!pts[i].luecke) iv.push({ t0: pts[i - 1].t, t1: pts[i].t, menge: pts[i].v - pts[i - 1].v });
   return iv;
 }
-export function heatDaily(kreisId) { return distribute(pointsToIntervals(heatPoints(kreisId))); }
+// Lange Ablese-Abstände (> 31 Tage, z. B. nur eine Ablesung pro Jahr) werden nicht gleichmäßig verteilt,
+// sondern im Verhältnis zum Ölverbrauch derselben Tage – sonst hätte der Sommer so viel Wärme wie der Januar.
+const LANG = 31 * DAY;
+export function heatDaily(kreisId) {
+  const iv = pointsToIntervals(heatPoints(kreisId));
+  if (iv.some(x => x.t1 - x.t0 > LANG)) {
+    const oil = oilDaily();
+    for (const x of iv) {
+      if (x.t1 - x.t0 <= LANG) continue;
+      let abgedeckt = 0;
+      for (let d = startOfDay(x.t0); d < x.t1; d = nextDay(d)) abgedeckt += oil.get(dayKey(d))?.abdeckung || 0;
+      if (abgedeckt >= 0.9 * (x.t1 - x.t0) / DAY) x.form = oil;
+    }
+  }
+  return distribute(iv);
+}
 
 // Unterzähler: Ein Kreis mit `teilVon` ist im Zähler des übergeordneten Kreises enthalten (z. B. Studio im EG).
 function subtractDaily(a, subs) {
   const out = new Map();
   for (const [k, v] of a) {
     const minus = subs.reduce((s, m) => s + (m.get(k)?.menge || 0), 0);
-    out.set(k, { menge: v.menge - minus, abdeckung: v.abdeckung });
+    out.set(k, { menge: v.menge - minus, abdeckung: v.abdeckung, geschaetzt: v.geschaetzt });
   }
   return out;
 }
@@ -186,9 +215,14 @@ export function aggregate(daily, gran) {
     const k = periodKey(dk, gran);
     const o = out.get(k) || { menge: 0, tage: 0 };
     o.menge += v.menge; o.tage += v.abdeckung;
+    if (v.geschaetzt) o.gesch = (o.gesch || 0) + v.menge;
     out.set(k, o);
   }
-  for (const [k, o] of out) o.abdeckung = Math.min(1, o.tage / periodDays(k, gran));
+  for (const [k, o] of out) {
+    o.abdeckung = Math.min(1, o.tage / periodDays(k, gran));
+    // als geschätzt markieren, wenn ein nennenswerter Teil nach Ölverbrauch verteilt wurde
+    if (o.gesch && o.gesch > 0.2 * Math.max(o.menge, 1)) o.geschaetzt = true;
+  }
   return out;
 }
 
@@ -213,8 +247,8 @@ export function sumDaily(maps) {
   const out = new Map();
   for (const m of maps) for (const [k, v] of m) {
     const o = out.get(k);
-    if (!o) out.set(k, { menge: v.menge, abdeckung: v.abdeckung });
-    else { o.menge += v.menge; o.abdeckung = Math.min(o.abdeckung, v.abdeckung); }
+    if (!o) out.set(k, { menge: v.menge, abdeckung: v.abdeckung, geschaetzt: v.geschaetzt });
+    else { o.menge += v.menge; o.abdeckung = Math.min(o.abdeckung, v.abdeckung); if (v.geschaetzt) o.geschaetzt = true; }
   }
   return out;
 }

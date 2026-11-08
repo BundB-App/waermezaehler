@@ -35,6 +35,7 @@ function intervalle(pts) {
   const iv = [];
   for (let i = 1; i < pts.length; i++) {
     const t0 = pts[i - 1].t, t1 = pts[i].t;
+    if (pts[i].luecke) continue; // unbekannter Verbrauch beim Zählerwechsel
     if (t1 > t0) iv.push({ t0, t1, tage: (t1 - t0) / DAY, menge: pts[i].v - pts[i - 1].v });
   }
   return iv;

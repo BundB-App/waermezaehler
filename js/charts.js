@@ -176,7 +176,7 @@ function verbrauch(body) {
     ${each ? seasons.map(y => `<div class="card"><h2>Heizperiode ${y} ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'}</h2><div class="chart"><canvas data-hp="${y}"></canvas></div></div>`).join('')
       + `<p class="muted small" style="margin:-4px 2px 12px">Alle Heizperioden mit gleicher Skala – direkt vergleichbar. ${gran === 'week' ? 'Wochen' : 'Monate'} von Juli bis Juni.</p>`
     : !keys.length ? leer(r) : `<div class="card"><h2>Wärmeverbrauch ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'} · ${esc(r.label)}</h2>${chartBox(keys.length)}
-      <p class="muted small">Blassere Balken: Zeitraum nur teilweise durch Ablesungen abgedeckt.</p></div>`}
+      <p class="muted small">Blassere Balken: Zeitraum nur teilweise abgedeckt oder geschätzt (alte Zähler 2022/23: nur zwei Ablesungen, Verteilung nach Ölverbrauch).</p></div>`}
     <div class="card"><h2>Tabelle</h2><div class="table-wrap"><table>
       <thead><tr><th>Zeitraum</th>${agg.map(a => `<th>${esc(a.label)}</th>`).join('')}<th>Gesamt</th></tr></thead>
       <tbody>${[...keys].reverse().map(k => {
@@ -195,8 +195,10 @@ function verbrauch(body) {
       footer: items => {
         const k = ks[items[0].dataIndex];
         const tot = items.reduce((s, i) => s + (i.raw || 0), 0);
-        const cov = Math.min(...agg.map(a => (g === gran ? a.agg : S.aggregate(a.daily, g)).get(k)?.abdeckung ?? 0));
-        return `Gesamt: ${fmtAuto(tot)} kWh` + (cov < 0.95 ? `\nnur ${Math.round(cov * 100)} % des Zeitraums abgedeckt` : '');
+        const ag = agg.map(a => (g === gran ? a.agg : S.aggregate(a.daily, g)).get(k));
+        const cov = Math.min(...ag.map(o => o?.abdeckung ?? 0));
+        return `Gesamt: ${fmtAuto(tot)} kWh` + (cov < 0.95 ? `\nnur ${Math.round(cov * 100)} % des Zeitraums abgedeckt` : '')
+          + (ag.some(o => o?.geschaetzt) ? '\ngeschätzt: Jahreswert nach Ölverbrauch verteilt' : '');
       },
     },
   });
@@ -215,7 +217,7 @@ function verbrauch(body) {
         type: 'bar',
         data: {
           labels: p.keys.map(k => S.periodLabel(k, egran).replace(/ ’\d+/, '')),
-          datasets: eagg.map(a => { const c = kreisFarbe(a.idx); return { label: a.label, data: p.keys.map(k => val(a.agg, k)), stack: 's', backgroundColor: p.keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 ? alpha(c, 0.4) : c)), borderRadius: 2, maxBarThickness: 30 }; }),
+          datasets: eagg.map(a => { const c = kreisFarbe(a.idx); return { label: a.label, data: p.keys.map(k => val(a.agg, k)), stack: 's', backgroundColor: p.keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 || a.agg.get(k)?.geschaetzt ? alpha(c, 0.4) : c)), borderRadius: 2, maxBarThickness: 30 }; }),
         },
         options: baseOptions({
           plugins: { legend: { ...baseOptions().plugins.legend, display: p === per[0] }, tooltip: tooltipFor(p.keys, egran) },
@@ -233,7 +235,7 @@ function verbrauch(body) {
         const c = kreisFarbe(a.idx);
         return {
           label: a.label, data: keys.map(k => val(a.agg, k)), stack: 's',
-          backgroundColor: keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 ? alpha(c, 0.4) : c)),
+          backgroundColor: keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 || a.agg.get(k)?.geschaetzt ? alpha(c, 0.4) : c)),
           borderRadius: 3, maxBarThickness: 46,
         };
       }),
@@ -425,7 +427,7 @@ async function witterung(body) {
     // Erst ab nennenswertem Heizbedarf (Ø ≥ 4 Gradtage pro Tag, also kühler als ~16 °C) aussagekräftig
     const proGt = v.tage > 0 && gCov / v.tage >= 4 ? v.menge / gCov : null;
     const norm = normal?.proMonat[+m.slice(5) - 1];
-    return { m, menge: v.menge, abdeckung: v.abdeckung, gt: g?.menge ?? null, gCov, proGt, bereinigt: proGt !== null && norm ? proGt * norm * (v.tage / S.periodDays(m, 'month')) : null, temp: mT.get(m) ? mT.get(m).s / mT.get(m).n : null };
+    return { m, menge: v.menge, abdeckung: v.abdeckung, geschaetzt: v.geschaetzt, gt: g?.menge ?? null, gCov, proGt, bereinigt: proGt !== null && norm ? proGt * norm * (v.tage / S.periodDays(m, 'month')) : null, temp: mT.get(m) ? mT.get(m).s / mT.get(m).n : null };
   });
 
   // Energiesignatur: Wochenmittel Verbrauch/Tag gegen Wochenmittel Temperatur
@@ -433,7 +435,7 @@ async function witterung(body) {
   const wT = new Map();
   for (const [k, t] of temps) { const w = S.periodKey(k, 'week'); const o = wT.get(w) || { s: 0, n: 0 }; o.s += t; o.n++; wT.set(w, o); }
   const inR = w => { const d = S.dayKey(isoMonday(w)); return d >= r.from && d < r.to; };
-  const pts = [...wVal].filter(([w, o]) => o.tage >= 3 && wT.get(w) && inR(w)).map(([w, o]) => ({ x: wT.get(w).s / wT.get(w).n, y: o.menge / o.tage, w }));
+  const pts = [...wVal].filter(([w, o]) => o.tage >= 3 && !o.geschaetzt && wT.get(w) && inR(w)).map(([w, o]) => ({ x: wT.get(w).s / wT.get(w).n, y: o.menge / o.tage, w }));
 
   body.innerHTML = `
     <div class="toolbar">${seriesSelect(sel)}${zeitSelect()}</div>
@@ -444,8 +446,8 @@ async function witterung(body) {
       <p class="muted small">Jeder Punkt ist eine Woche: Ø Außentemperatur gegen Ø Verbrauch pro Tag. Liegen neue Punkte unter der alten Wolke, heizt ihr effizienter.</p></div>
     <div class="card"><h2>Monate</h2><div class="table-wrap"><table>
       <thead><tr><th>Monat</th><th>Ø °C</th><th>${unit}</th><th>Gradtage</th><th>${unit}/Gt</th>${normal ? `<th>bereinigt ${unit}</th>` : ''}</tr></thead>
-      <tbody>${[...rows].reverse().map(r => `<tr><td>${S.periodLabel(r.m, 'month')}${r.abdeckung < .95 ? ' *' : ''}</td><td>${fmt(r.temp, 1)}</td><td>${fmtAuto(r.menge)}</td><td>${fmt(r.gt, 0)}</td><td>${r.proGt !== null ? fmt(r.proGt, 2) : '–'}</td>${normal ? `<td>${fmtAuto(r.bereinigt)}</td>` : ''}</tr>`).join('')}</tbody>
-    </table></div><p class="muted small">* Monat nur teilweise abgedeckt. In Monaten ohne Heizbedarf (kaum Gradtage) ist kein Wert sinnvoll.</p></div>`;
+      <tbody>${[...rows].reverse().map(r => `<tr><td>${S.periodLabel(r.m, 'month')}${r.abdeckung < .95 ? ' *' : ''}${r.geschaetzt ? ' ≈' : ''}</td><td>${fmt(r.temp, 1)}</td><td>${fmtAuto(r.menge)}</td><td>${fmt(r.gt, 0)}</td><td>${r.proGt !== null ? fmt(r.proGt, 2) : '–'}</td>${normal ? `<td>${fmtAuto(r.bereinigt)}</td>` : ''}</tr>`).join('')}</tbody>
+    </table></div><p class="muted small">* Monat nur teilweise abgedeckt. ≈ geschätzt (nach Ölverbrauch verteilt). In Monaten ohne Heizbedarf (kaum Gradtage) ist kein Wert sinnvoll.</p></div>`;
   body.querySelector('[data-sel]').onchange = ev => { lsSet('wz.stats.wsel', ev.target.value); witterung(body); };
 
   const o = baseOptions();
@@ -544,7 +546,8 @@ function effizienz(body) {
   if (!heat.size || !oil.size) { body.innerHTML = noData('Dafür braucht es Ablesungen mit Wärmezählern und Ölstand im selben Zeitraum.'); return; }
   const gran = lsGet('wz.stats.egran', 'month');
   // Nur Tage, die von beiden abgedeckt sind
-  const both = [...heat.keys()].filter(k => oil.has(k));
+  // Geschätzte Wärme (nach Öl verteilt) würde den Nutzungsgrad nur nachbilden → für Teilzeiträume auslassen
+  const both = [...heat.keys()].filter(k => oil.has(k) && !heat.get(k).geschaetzt);
   const h = new Map(both.map(k => [k, heat.get(k)])), o2 = new Map(both.map(k => [k, oil.get(k)]));
   const ah = S.aggregate(h, gran), ao = S.aggregate(o2, gran);
   const r = zeitraum();
