@@ -50,7 +50,17 @@ function chart(el, cfg) {
 function canvas(root, sel) { return root.querySelector(sel); }
 
 function heatMaps() {
-  return S.kreisSeries();
+  return S.kreisSeries({ split: S.splitEnabled() });
+}
+// Schalter: Unterzähler (Studio) einzeln zeigen oder im Hauptzähler (EG) lassen
+function splitToggle() {
+  if (!S.hasSubMeters()) return '';
+  const ks = store.kreise();
+  const subs = ks.filter(k => k.teilVon && ks.some(p => p.id === k.teilVon));
+  const names = subs.map(k => k.name).join(', ');
+  const parents = [...new Set(subs.map(k => store.kreis(k.teilVon).name))].join(', ');
+  const on = S.splitEnabled();
+  return `<div class="seg" data-split><button data-k="1" class="${on ? 'active' : ''}">${esc(names)} einzeln</button><button data-k="0" class="${on ? '' : 'active'}">${esc(names)} im ${esc(parents)}</button></div>`;
 }
 function allDayKeys(maps) {
   const s = new Set();
@@ -73,6 +83,10 @@ export function renderStats(root) {
     renderStats(root);
   });
   const body = root.querySelector('[data-body]');
+  body.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-split] button');
+    if (b) { lsSet('wz.stats.split', b.dataset.k); renderStats(root); }
+  });
   ({ verbrauch, kreise: kreiseTab, jahre, witterung, oel, effizienz, einstellungen })[tab]?.(body);
 }
 
@@ -92,6 +106,7 @@ function verbrauch(body) {
     <div class="toolbar">
       <div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div>
       <div class="seg" data-mode><button data-k="sum" class="${mode === 'sum' ? 'active' : ''}">Summe</button><button data-k="avg" class="${mode === 'avg' ? 'active' : ''}">Ø pro Tag</button></div>
+      ${splitToggle()}
     </div>
     <div class="card"><h2>Wärmeverbrauch ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'}</h2><div class="chart tall"><canvas data-c></canvas></div>
       <p class="muted small">Blassere Balken: Zeitraum nur teilweise durch Ablesungen abgedeckt.</p></div>
@@ -164,7 +179,7 @@ function kreiseTab(body) {
   body.innerHTML = `
     <div class="toolbar"><div class="seg" data-range>
       ${[['d30', '30 Tage'], ['season', 'Heizperiode ' + curSeason], ['last', '12 Monate'], ['all', 'Gesamt']].map(([k, l]) => `<button data-k="${k}" class="${k === range ? 'active' : ''}">${l}</button>`).join('')}
-    </div></div>
+    </div>${splitToggle()}</div>
     <div class="grid">
       <div class="card"><h2>Anteile am Wärmeverbrauch</h2><div class="chart"><canvas data-c></canvas></div></div>
       <div class="card"><h2>Kreise im Vergleich</h2><div class="table-wrap"><table>

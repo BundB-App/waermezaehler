@@ -72,9 +72,11 @@ function subtractDaily(a, subs) {
 const isTopLevel = (k, ks) => !k.teilVon || !ks.some(p => p.id === k.teilVon);
 
 // Kreise zur Aufteilung: Hauptzähler ohne ihre Unterzähler, Unterzähler einzeln. Die Summe ist der echte Gesamtverbrauch.
-export function kreisSeries() {
+// split = false: Unterzähler bleiben im Hauptzähler enthalten und werden nicht einzeln gezeigt.
+export function kreisSeries({ split = true } = {}) {
   const ks = store.kreise();
   const gross = new Map(ks.map(k => [k.id, heatDaily(k.id)]));
+  if (!split) return ks.filter(k => isTopLevel(k, ks)).map(k => ({ k, idx: k.farbe || k.reihenfolge || 1, label: k.name, daily: gross.get(k.id) }));
   return ks.map(k => {
     const kids = ks.filter(c => c.teilVon === k.id);
     return {
@@ -85,6 +87,13 @@ export function kreisSeries() {
   });
 }
 // Gesamter Wärmeverbrauch: nur Hauptzähler (Unterzähler sind darin schon enthalten)
+export function hasSubMeters() {
+  const ks = store.kreise();
+  return ks.some(k => !isTopLevel(k, ks));
+}
+export function splitEnabled() {
+  try { return localStorage.getItem('wz.stats.split') !== '0'; } catch { return true; }
+}
 export function totalHeatDaily() {
   const ks = store.kreise();
   return sumDaily(ks.filter(k => isTopLevel(k, ks)).map(k => heatDaily(k.id)));

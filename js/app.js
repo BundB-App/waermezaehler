@@ -93,7 +93,7 @@ function home() {
     return;
   }
   const lastAbl = store.eintraege('ablesung').at(-1);
-  const maps = S.kreisSeries();
+  const maps = S.kreisSeries({ split: S.splitEnabled() });
   const fc = S.oilForecast();
   const heiz = S.settingsSeries().at(-1);
   const kpi = (n) => maps.map(m => ({ m, a: S.avgPerDay(m.daily, n) }));
