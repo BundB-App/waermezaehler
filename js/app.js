@@ -424,5 +424,10 @@ function folderPicker(onPick) {
   if (TITLES[h] && current !== 'settings') go(h); else if (current !== 'settings') go('home');
   updateSync();
   store.sync().catch(() => {});
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    // Neue Version übernommen → einmal neu laden, damit alle Dateien aktuell sind
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) location.reload(); });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  }
 })();
