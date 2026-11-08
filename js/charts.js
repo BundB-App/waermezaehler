@@ -60,7 +60,9 @@ function splitToggle() {
   const names = subs.map(k => k.name).join(', ');
   const parents = [...new Set(subs.map(k => store.kreis(k.teilVon).name))].join(', ');
   const on = S.splitEnabled();
-  return `<div class="seg" data-split><button data-k="1" class="${on ? 'active' : ''}">${esc(names)} einzeln</button><button data-k="0" class="${on ? '' : 'active'}">${esc(names)} im ${esc(parents)}</button></div>`;
+  return `<label class="switch" data-split title="Aus: ${esc(names)} ist im ${esc(parents)} eingerechnet">
+    <input type="checkbox" ${on ? 'checked' : ''}><span class="track" aria-hidden="true"></span>
+    <span class="switch-label">${esc(names)} einzeln<small>${on ? `getrennt vom ${esc(parents)}` : `im ${esc(parents)} enthalten`}</small></span></label>`;
 }
 function allDayKeys(maps) {
   const s = new Set();
@@ -83,9 +85,8 @@ export function renderStats(root) {
     renderStats(root);
   });
   const body = root.querySelector('[data-body]');
-  body.addEventListener('click', ev => {
-    const b = ev.target.closest('[data-split] button');
-    if (b) { lsSet('wz.stats.split', b.dataset.k); renderStats(root); }
+  body.addEventListener('change', ev => {
+    if (ev.target.closest('[data-split]')) { lsSet('wz.stats.split', ev.target.checked ? '1' : '0'); renderStats(root); }
   });
   ({ verbrauch, kreise: kreiseTab, jahre, witterung, oel, effizienz, einstellungen })[tab]?.(body);
 }
