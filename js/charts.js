@@ -1,0 +1,512 @@
+// Statistik-Ansicht mit Diagrammen (Chart.js)
+import * as store from './store.js';
+import * as S from './stats.js';
+import * as W from './weather.js';
+import { esc, fmt, fmtAuto, fmtDate, cssVar, kreisFarbe } from './ui.js';
+
+let charts = [];
+const destroyAll = () => { charts.forEach(c => c.destroy()); charts = []; };
+const LS_TAB = 'wz.stats.tab';
+const LS_GRAN = 'wz.stats.gran';
+const lsGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* egal */ } };
+
+const TABS = [
+  ['verbrauch', 'Verbrauch'], ['kreise', 'Kreise'], ['jahre', 'Jahresvergleich'],
+  ['witterung', 'Witterung'], ['oel', 'Öl'], ['effizienz', 'Nutzungsgrad'], ['einstellungen', 'Einstellungen'],
+];
+const GRANS = [['week', 'Woche'], ['month', 'Monat'], ['year', 'Jahr'], ['season', 'Heizperiode']];
+
+function alpha(color, a) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color.trim());
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+function baseOptions(extra = {}) {
+  const grid = cssVar('--border'), text = cssVar('--text-3');
+  Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  Chart.defaults.color = text;
+  return {
+    responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true, pointStyle: 'rectRounded', padding: 14 } },
+      tooltip: { backgroundColor: cssVar('--text'), titleColor: cssVar('--bg'), bodyColor: cssVar('--bg'), padding: 10, cornerRadius: 8, boxPadding: 4 },
+    },
+    scales: {
+      x: { grid: { display: false }, border: { color: grid }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
+      y: { grid: { color: grid }, border: { display: false }, beginAtZero: true, ticks: { callback: v => fmt(v) } },
+    },
+    ...extra,
+  };
+}
+function chart(el, cfg) {
+  const c = new Chart(el, cfg);
+  charts.push(c);
+  return c;
+}
+function canvas(root, sel) { return root.querySelector(sel); }
+
+function heatMaps() {
+  return store.kreise().map(k => ({ k, idx: k.farbe || k.reihenfolge || 1, daily: S.heatDaily(k.id) }));
+}
+function allDayKeys(maps) {
+  const s = new Set();
+  maps.forEach(m => m.forEach((_, k) => s.add(k)));
+  return [...s];
+}
+function noData(msg = 'Für diese Auswertung braucht es mindestens zwei Ablesungen.') {
+  return `<div class="card empty"><strong>Noch keine Daten</strong>${esc(msg)}</div>`;
+}
+
+export function renderStats(root) {
+  destroyAll();
+  const tab = lsGet(LS_TAB, 'verbrauch');
+  root.innerHTML = `
+    <div class="scroll-x"><div class="seg" data-tabs>${TABS.map(([k, l]) => `<button data-k="${k}" class="${k === tab ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+    <div data-body></div>`;
+  root.querySelector('[data-tabs]').addEventListener('click', ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    lsSet(LS_TAB, b.dataset.k);
+    renderStats(root);
+  });
+  const body = root.querySelector('[data-body]');
+  ({ verbrauch, kreise: kreiseTab, jahre, witterung, oel, effizienz, einstellungen })[tab]?.(body);
+}
+
+// ---------- Verbrauch ----------
+function verbrauch(body) {
+  const gran = lsGet(LS_GRAN, 'week');
+  const mode = lsGet('wz.stats.mode', 'sum');
+  const maps = heatMaps();
+  const days = allDayKeys(maps.map(m => m.daily));
+  if (!days.length) { body.innerHTML = noData(); return; }
+  const limit = { week: 26, month: 24, year: 20, season: 20 }[gran];
+  const keys = S.periodRange(days, gran).slice(-limit);
+  const agg = maps.map(m => ({ ...m, agg: S.aggregate(m.daily, gran) }));
+  const val = (a, k) => { const o = a.get(k); if (!o) return null; return mode === 'avg' ? (o.tage > 0 ? o.menge / o.tage : null) : o.menge; };
+
+  body.innerHTML = `
+    <div class="toolbar">
+      <div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div>
+      <div class="seg" data-mode><button data-k="sum" class="${mode === 'sum' ? 'active' : ''}">Summe</button><button data-k="avg" class="${mode === 'avg' ? 'active' : ''}">Ø pro Tag</button></div>
+    </div>
+    <div class="card"><h2>Wärmeverbrauch ${mode === 'avg' ? '(Ø kWh pro Tag)' : '(kWh)'}</h2><div class="chart tall"><canvas data-c></canvas></div>
+      <p class="muted small">Blassere Balken: Zeitraum nur teilweise durch Ablesungen abgedeckt.</p></div>
+    <div class="card"><h2>Tabelle</h2><div class="table-wrap"><table>
+      <thead><tr><th>Zeitraum</th>${agg.map(a => `<th>${esc(a.k.name)}</th>`).join('')}<th>Gesamt</th></tr></thead>
+      <tbody>${[...keys].reverse().map(k => {
+        const vs = agg.map(a => val(a.agg, k));
+        const tot = vs.some(v => v !== null) ? vs.reduce((s, v) => s + (v || 0), 0) : null;
+        return `<tr><td>${S.periodLabel(k, gran)}</td>${vs.map(v => `<td>${fmtAuto(v)}</td>`).join('')}<td><b>${fmtAuto(tot)}</b></td></tr>`;
+      }).join('')}</tbody></table></div></div>`;
+
+  body.querySelector('[data-gran]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet(LS_GRAN, b.dataset.k); verbrauch(body); } };
+  body.querySelector('[data-mode]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.mode', b.dataset.k); verbrauch(body); } };
+
+  chart(canvas(body, '[data-c]'), {
+    type: 'bar',
+    data: {
+      labels: keys.map(k => S.periodLabel(k, gran)),
+      datasets: agg.map(a => {
+        const c = kreisFarbe(a.idx);
+        return {
+          label: a.k.name, data: keys.map(k => val(a.agg, k)), stack: 's',
+          backgroundColor: keys.map(k => ((a.agg.get(k)?.abdeckung ?? 1) < 0.95 ? alpha(c, 0.4) : c)),
+          borderRadius: 3, maxBarThickness: 46,
+        };
+      }),
+    },
+    options: baseOptions({
+      plugins: {
+        ...baseOptions().plugins,
+        tooltip: {
+          ...baseOptions().plugins.tooltip,
+          callbacks: {
+            label: c => `${c.dataset.label}: ${fmtAuto(c.raw)} kWh`,
+            footer: items => {
+              const k = keys[items[0].dataIndex];
+              const tot = items.reduce((s, i) => s + (i.raw || 0), 0);
+              const cov = Math.min(...agg.map(a => a.agg.get(k)?.abdeckung ?? 0));
+              return `Gesamt: ${fmtAuto(tot)} kWh` + (cov < 0.95 ? `\nnur ${Math.round(cov * 100)} % des Zeitraums abgedeckt` : '');
+            },
+          },
+        },
+      },
+      scales: { ...baseOptions().scales, x: { ...baseOptions().scales.x, stacked: true }, y: { ...baseOptions().scales.y, stacked: true } },
+    }),
+  });
+}
+
+// ---------- Kreise ----------
+function kreiseTab(body) {
+  const range = lsGet('wz.stats.krange', 'season');
+  const maps = heatMaps();
+  const days = allDayKeys(maps.map(m => m.daily));
+  if (!days.length) { body.innerHTML = noData(); return; }
+  const today = S.dayKey(new Date());
+  const curSeason = S.periodKey(today, 'season');
+  const from = {
+    season: curSeason.slice(0, 4) + '-07-01',
+    last: S.dayKey(new Date(Date.now() - 365 * 86400000)),
+    d30: S.dayKey(new Date(Date.now() - 30 * 86400000)),
+    all: '0000',
+  }[range];
+  const rows = maps.map(m => {
+    let menge = 0, tage = 0;
+    for (const [k, v] of m.daily) if (k >= from) { menge += v.menge; tage += v.abdeckung; }
+    return { ...m, menge, proTag: tage ? menge / tage : null };
+  });
+  const total = rows.reduce((s, r) => s + r.menge, 0);
+
+  body.innerHTML = `
+    <div class="toolbar"><div class="seg" data-range>
+      ${[['d30', '30 Tage'], ['season', 'Heizperiode ' + curSeason], ['last', '12 Monate'], ['all', 'Gesamt']].map(([k, l]) => `<button data-k="${k}" class="${k === range ? 'active' : ''}">${l}</button>`).join('')}
+    </div></div>
+    <div class="grid">
+      <div class="card"><h2>Anteile am Wärmeverbrauch</h2><div class="chart"><canvas data-c></canvas></div></div>
+      <div class="card"><h2>Kreise im Vergleich</h2><div class="table-wrap"><table>
+        <thead><tr><th>Kreis</th><th>kWh</th><th>Anteil</th><th>Ø kWh/Tag</th></tr></thead>
+        <tbody>${rows.map(r => `<tr><td><span class="swatch" style="background:${kreisFarbe(r.idx)}"></span>${esc(r.k.name)}</td><td>${fmtAuto(r.menge)}</td><td>${total ? fmt(r.menge / total * 100, 1) + ' %' : '–'}</td><td>${fmtAuto(r.proTag)}</td></tr>`).join('')}
+        <tr><td><b>Gesamt</b></td><td><b>${fmtAuto(total)}</b></td><td></td><td><b>${fmtAuto(rows.reduce((s, r) => s + (r.proTag || 0), 0))}</b></td></tr></tbody>
+      </table></div></div>
+    </div>
+    <div class="card"><h2>Ø kWh pro Tag je Monat</h2><div class="chart"><canvas data-l></canvas></div></div>`;
+  body.querySelector('[data-range]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.krange', b.dataset.k); kreiseTab(body); } };
+
+  chart(canvas(body, '[data-c]'), {
+    type: 'doughnut',
+    data: { labels: rows.map(r => r.k.name), datasets: [{ data: rows.map(r => Math.max(0, r.menge)), backgroundColor: rows.map(r => kreisFarbe(r.idx)), borderColor: cssVar('--surface'), borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '62%',
+      plugins: {
+        legend: baseOptions().plugins.legend,
+        tooltip: { ...baseOptions().plugins.tooltip, callbacks: { label: c => `${c.label}: ${fmtAuto(c.raw)} kWh (${total ? fmt(c.raw / total * 100, 1) : 0} %)` } },
+      },
+    },
+  });
+
+  const keys = S.periodRange(days, 'month').slice(-24);
+  chart(canvas(body, '[data-l]'), {
+    type: 'line',
+    data: {
+      labels: keys.map(k => S.periodLabel(k, 'month')),
+      datasets: rows.map(r => {
+        const a = S.aggregate(r.daily, 'month');
+        return { label: r.k.name, data: keys.map(k => { const o = a.get(k); return o && o.tage ? o.menge / o.tage : null; }), borderColor: kreisFarbe(r.idx), backgroundColor: kreisFarbe(r.idx), tension: .3, spanGaps: true, pointRadius: 3 };
+      }),
+    },
+    options: baseOptions({ plugins: { ...baseOptions().plugins, tooltip: { ...baseOptions().plugins.tooltip, callbacks: { label: c => `${c.dataset.label}: ${fmtAuto(c.raw)} kWh/Tag` } } } }),
+  });
+}
+
+// ---------- Jahresvergleich ----------
+function seriesFor(sel) {
+  if (sel === 'oel') return { daily: S.oilDaily(), unit: 'L' };
+  if (sel === 'alle') return { daily: S.sumDaily(heatMaps().map(m => m.daily)), unit: 'kWh' };
+  return { daily: S.heatDaily(sel), unit: 'kWh' };
+}
+function seriesSelect(sel) {
+  return `<select data-sel style="width:auto;font-size:15px;padding:7px 30px 7px 12px">
+    <option value="alle" ${sel === 'alle' ? 'selected' : ''}>Alle Kreise</option>
+    ${store.kreise().map(k => `<option value="${k.id}" ${sel === k.id ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}
+    <option value="oel" ${sel === 'oel' ? 'selected' : ''}>Öl (Liter)</option></select>`;
+}
+
+function jahre(body) {
+  const basis = lsGet('wz.stats.jbasis', 'season');
+  const sel = lsGet('wz.stats.jsel', 'alle');
+  const { daily, unit } = seriesFor(sel);
+  if (!daily.size) { body.innerHTML = noData(); return; }
+  const month = S.aggregate(daily, 'month');
+  const groups = new Map(); // Jahr/HP → Array(12)
+  for (const [k, o] of month) {
+    const [y, m] = k.split('-').map(Number);
+    const g = basis === 'season' ? S.periodKey(k + '-01', 'season') : String(y);
+    const idx = basis === 'season' ? (m + 5) % 12 : m - 1;
+    if (!groups.has(g)) groups.set(g, Array(12).fill(null));
+    groups.get(g)[idx] = o;
+  }
+  const gkeys = [...groups.keys()].sort();
+  const labels = basis === 'season' ? S.MONATE_HP : ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+  const palette = ['--text-3', '--c2', '--c4', '--c3', '--c5', '--c1'];
+
+  body.innerHTML = `
+    <div class="toolbar">
+      <div class="seg" data-basis><button data-k="season" class="${basis === 'season' ? 'active' : ''}">Heizperiode (Jul–Jun)</button><button data-k="year" class="${basis === 'year' ? 'active' : ''}">Kalenderjahr</button></div>
+      ${seriesSelect(sel)}
+    </div>
+    <div class="card"><h2>Monatsverbrauch im Vergleich (${unit})</h2><div class="chart tall"><canvas data-c></canvas></div></div>
+    <div class="card"><h2>Kumuliert</h2><div class="chart"><canvas data-k></canvas></div></div>
+    <div class="card"><h2>Summen</h2><div class="table-wrap"><table>
+      <thead><tr><th>${basis === 'season' ? 'Heizperiode' : 'Jahr'}</th><th>${unit}</th><th>Abgedeckte Monate</th><th>Ø ${unit}/Tag</th></tr></thead>
+      <tbody>${[...gkeys].reverse().map(g => {
+        const arr = groups.get(g).filter(Boolean);
+        const sum = arr.reduce((s, o) => s + o.menge, 0), tage = arr.reduce((s, o) => s + o.tage, 0);
+        return `<tr><td>${g}</td><td>${fmtAuto(sum)}</td><td>${arr.filter(o => o.abdeckung > .95).length} / 12</td><td>${fmtAuto(tage ? sum / tage : null)}</td></tr>`;
+      }).join('')}</tbody></table></div>
+      <p class="muted small">Für einen fairen Vergleich unterschiedlich kalter Jahre siehe „Witterung“.</p></div>`;
+  body.querySelector('[data-basis]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.jbasis', b.dataset.k); jahre(body); } };
+  body.querySelector('[data-sel]').onchange = ev => { lsSet('wz.stats.jsel', ev.target.value); jahre(body); };
+
+  const ds = (cum) => gkeys.map((g, i) => {
+    const col = cssVar(palette[Math.max(0, palette.length - gkeys.length + i)] || '--c1');
+    const isLast = i === gkeys.length - 1;
+    let acc = 0;
+    const data = groups.get(g).map(o => { if (!cum) return o ? o.menge : null; if (!o) return null; acc += o.menge; return acc; });
+    return cum
+      ? { label: g, data, borderColor: col, backgroundColor: col, borderWidth: isLast ? 3 : 2, tension: .25, spanGaps: true, pointRadius: 2 }
+      : { label: g, data, backgroundColor: isLast ? cssVar('--accent') : col, borderRadius: 3, maxBarThickness: 22 };
+  });
+  const tt = { ...baseOptions().plugins, tooltip: { ...baseOptions().plugins.tooltip, callbacks: { label: c => `${c.dataset.label}: ${fmtAuto(c.raw)} ${unit}` } } };
+  chart(canvas(body, '[data-c]'), { type: 'bar', data: { labels, datasets: ds(false) }, options: baseOptions({ plugins: tt }) });
+  chart(canvas(body, '[data-k]'), { type: 'line', data: { labels, datasets: ds(true) }, options: baseOptions({ plugins: tt }) });
+}
+
+// ---------- Witterung ----------
+async function witterung(body) {
+  const sel = lsGet('wz.stats.wsel', 'alle');
+  const { daily, unit } = seriesFor(sel);
+  if (!daily.size) { body.innerHTML = noData(); return; }
+  body.innerHTML = `<div class="card empty">Lade Wetterdaten für ${esc(store.settings().ort)} …</div>`;
+  let temps, normal;
+  const first = [...daily.keys()].sort()[0];
+  try {
+    temps = await W.temperatures(first);
+    normal = await W.normalGradtage().catch(() => null);
+  } catch (e) {
+    body.innerHTML = noData('Wetterdaten konnten nicht geladen werden (Internetverbindung?).');
+    return;
+  }
+  const gt = S.gradtageDaily(temps);
+  const s = store.settings();
+
+  // Monatstabelle
+  const mVal = S.aggregate(daily, 'month');
+  const mGt = S.aggregate(gt, 'month');
+  const mT = new Map();
+  for (const [k, t] of temps) { const m = k.slice(0, 7); const o = mT.get(m) || { s: 0, n: 0 }; o.s += t; o.n++; mT.set(m, o); }
+  const months = [...mVal.keys()].sort().slice(-24);
+  const rows = months.map(m => {
+    const v = mVal.get(m), g = mGt.get(m);
+    // Gradtage nur für abgedeckte Tage zählen
+    let gCov = 0;
+    for (const [dk, dv] of daily) if (dk.startsWith(m)) gCov += S.gradtag(temps.get(dk) ?? 99, s) * dv.abdeckung;
+    // Erst ab nennenswertem Heizbedarf (Ø ≥ 4 Gradtage pro Tag, also kühler als ~16 °C) aussagekräftig
+    const proGt = v.tage > 0 && gCov / v.tage >= 4 ? v.menge / gCov : null;
+    const norm = normal?.proMonat[+m.slice(5) - 1];
+    return { m, menge: v.menge, abdeckung: v.abdeckung, gt: g?.menge ?? null, gCov, proGt, bereinigt: proGt !== null && norm ? proGt * norm * (v.tage / S.periodDays(m, 'month')) : null, temp: mT.get(m) ? mT.get(m).s / mT.get(m).n : null };
+  });
+
+  // Energiesignatur: Wochenmittel Verbrauch/Tag gegen Wochenmittel Temperatur
+  const wVal = S.aggregate(daily, 'week');
+  const wT = new Map();
+  for (const [k, t] of temps) { const w = S.periodKey(k, 'week'); const o = wT.get(w) || { s: 0, n: 0 }; o.s += t; o.n++; wT.set(w, o); }
+  const pts = [...wVal].filter(([w, o]) => o.tage >= 3 && wT.get(w)).map(([w, o]) => ({ x: wT.get(w).s / wT.get(w).n, y: o.menge / o.tage, w }));
+
+  body.innerHTML = `
+    <div class="toolbar">${seriesSelect(sel)}</div>
+    <div class="notice">Witterungsbereinigung nach Gradtagen (VDI 3807, G ${s.innentemp}/${s.heizgrenze}): Je kälter, desto mehr Gradtage. <b>${unit} pro Gradtag</b> ist damit über milde und kalte Monate vergleichbar.${normal ? ` „Bereinigt“ rechnet auf ein durchschnittliches Jahr (${normal.jahre}) für ${esc(s.ort)} um.` : ''}</div>
+    <div class="card"><h2>${unit} pro Gradtag und Außentemperatur</h2><div class="chart tall"><canvas data-c></canvas></div></div>
+    <div class="card"><h2>Energiesignatur (Wochen)</h2><div class="chart"><canvas data-s></canvas></div>
+      <p class="muted small">Jeder Punkt ist eine Woche: Ø Außentemperatur gegen Ø Verbrauch pro Tag. Liegen neue Punkte unter der alten Wolke, heizt ihr effizienter.</p></div>
+    <div class="card"><h2>Monate</h2><div class="table-wrap"><table>
+      <thead><tr><th>Monat</th><th>Ø °C</th><th>${unit}</th><th>Gradtage</th><th>${unit}/Gt</th>${normal ? `<th>bereinigt ${unit}</th>` : ''}</tr></thead>
+      <tbody>${[...rows].reverse().map(r => `<tr><td>${S.periodLabel(r.m, 'month')}${r.abdeckung < .95 ? ' *' : ''}</td><td>${fmt(r.temp, 1)}</td><td>${fmtAuto(r.menge)}</td><td>${fmt(r.gt, 0)}</td><td>${r.proGt !== null ? fmt(r.proGt, 2) : '–'}</td>${normal ? `<td>${fmtAuto(r.bereinigt)}</td>` : ''}</tr>`).join('')}</tbody>
+    </table></div><p class="muted small">* Monat nur teilweise abgedeckt. In Monaten ohne Heizbedarf (kaum Gradtage) ist kein Wert sinnvoll.</p></div>`;
+  body.querySelector('[data-sel]').onchange = ev => { lsSet('wz.stats.wsel', ev.target.value); witterung(body); };
+
+  const o = baseOptions();
+  chart(canvas(body, '[data-c]'), {
+    data: {
+      labels: rows.map(r => S.periodLabel(r.m, 'month')),
+      datasets: [
+        { type: 'bar', label: `${unit}/Gradtag`, data: rows.map(r => r.proGt), backgroundColor: cssVar('--accent'), borderRadius: 3, maxBarThickness: 34, yAxisID: 'y' },
+        { type: 'line', label: 'Ø Außentemperatur', data: rows.map(r => r.temp), borderColor: cssVar('--c2'), backgroundColor: cssVar('--c2'), tension: .3, pointRadius: 2, yAxisID: 'y2' },
+      ],
+    },
+    options: baseOptions({
+      plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { label: c => c.dataset.yAxisID === 'y2' ? `Ø ${fmt(c.raw, 1)} °C` : `${fmt(c.raw, 2)} ${unit}/Gt` } } },
+      scales: {
+        x: o.scales.x,
+        y: { ...o.scales.y, title: { display: true, text: `${unit}/Gt` }, ticks: { callback: v => fmt(v, 1) } },
+        y2: { position: 'right', grid: { display: false }, border: { display: false }, title: { display: true, text: '°C' }, ticks: { callback: v => fmt(v) } },
+      },
+    }),
+  });
+
+  const now = Date.now();
+  chart(canvas(body, '[data-s]'), {
+    type: 'scatter',
+    data: { datasets: [{
+      label: 'Wochen', data: pts,
+      backgroundColor: pts.map(p => { const [y, w] = p.w.split('-W').map(Number); const age = (now - new Date(y, 0, 1 + (w - 1) * 7)) / (365 * 86400000); return alpha(cssVar('--accent'), age < 0.5 ? 0.95 : age < 1.2 ? 0.55 : 0.25); }),
+      pointRadius: 5, pointHoverRadius: 7,
+    }] },
+    options: baseOptions({
+      interaction: { mode: 'nearest', intersect: true },
+      plugins: { legend: { display: false }, tooltip: { ...o.plugins.tooltip, callbacks: { label: c => `${S.periodLabel(c.raw.w, 'week')}: ${fmt(c.raw.x, 1)} °C → ${fmtAuto(c.raw.y)} ${unit}/Tag` } } },
+      scales: {
+        x: { type: 'linear', grid: { color: cssVar('--border') }, title: { display: true, text: 'Ø Außentemperatur °C' } },
+        y: { ...o.scales.y, title: { display: true, text: `${unit} pro Tag` } },
+      },
+    }),
+  });
+}
+
+// ---------- Öl ----------
+function oel(body) {
+  const pts = S.oilPoints();
+  if (pts.length < 2) { body.innerHTML = noData('Für die Ölauswertung braucht es mindestens zwei Ablesungen mit Ölstand.'); return; }
+  const daily = S.oilDaily();
+  const fc = S.oilForecast();
+  const gran = lsGet('wz.stats.ogran', 'week');
+  const keys = S.periodRange([...daily.keys()], gran).slice(-({ week: 26, month: 24, year: 20, season: 20 }[gran]));
+  const agg = S.aggregate(daily, gran);
+  const fills = store.eintraege('betankung');
+  const priced = fills.filter(f => f.preis && f.liter);
+  const literpreis = priced.length ? priced.reduce((s, f) => s + f.preis, 0) / priced.reduce((s, f) => s + f.liter, 0) : null;
+  const tank = store.settings().tankvolumen;
+
+  body.innerHTML = `
+    <div class="card"><div class="kpis">
+      <div class="kpi"><div class="label">Geschätzter Stand heute</div><div class="value">${fmt(fc.geschaetzt)}<span class="unit">L</span></div>${tank ? `<div class="muted small">${fmt(fc.geschaetzt / tank * 100)} % von ${fmt(tank)} L</div>` : ''}</div>
+      <div class="kpi"><div class="label">Verbrauch aktuell</div><div class="value">${fmt(fc.proWoche, 0)}<span class="unit">L/Woche</span></div><div class="muted small">${fmt(fc.proTag, 1)} L/Tag</div></div>
+      <div class="kpi"><div class="label">Reicht bis ca.</div><div class="value" style="font-size:18px">${fc.leerAm ? fc.leerAm.toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' }) : '–'}</div><div class="muted small">bei gleichbleibendem Verbrauch</div></div>
+      ${literpreis ? `<div class="kpi"><div class="label">Ø Literpreis</div><div class="value">${fmt(literpreis, 2)}<span class="unit">€/L</span></div><div class="muted small">≈ ${fmt(fc.proWoche * literpreis, 0)} € pro Woche</div></div>` : ''}
+    </div></div>
+    <div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card"><h2>Ölverbrauch (Liter)</h2><div class="chart"><canvas data-c></canvas></div></div>
+    <div class="card"><h2>Füllstand</h2><div class="chart"><canvas data-l></canvas></div></div>
+    ${fills.length ? `<div class="card"><h2>Betankungen</h2><div class="table-wrap"><table><thead><tr><th>Datum</th><th>Liter</th><th>Preis</th><th>€/L</th></tr></thead><tbody>
+      ${[...fills].reverse().map(f => `<tr><td>${fmtDate(S.parseZeit(f.zeit), false)}</td><td>${fmt(f.liter)}</td><td>${f.preis ? fmt(f.preis, 2) + ' €' : '–'}</td><td>${f.preis ? fmt(f.preis / f.liter, 3) : '–'}</td></tr>`).join('')}
+    </tbody></table></div></div>` : ''}`;
+  body.querySelector('[data-gran]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.ogran', b.dataset.k); oel(body); } };
+
+  const o = baseOptions();
+  chart(canvas(body, '[data-c]'), {
+    type: 'bar',
+    data: { labels: keys.map(k => S.periodLabel(k, gran)), datasets: [{ label: 'Liter', data: keys.map(k => agg.get(k)?.menge ?? null), backgroundColor: keys.map(k => ((agg.get(k)?.abdeckung ?? 1) < .95 ? alpha(cssVar('--oil'), .4) : cssVar('--oil'))), borderRadius: 3, maxBarThickness: 40 }] },
+    options: baseOptions({ plugins: { legend: { display: false }, tooltip: { ...o.plugins.tooltip, callbacks: { label: c => `${fmt(c.raw)} L` } } } }),
+  });
+  chart(canvas(body, '[data-l]'), {
+    type: 'line',
+    data: { datasets: [
+      { label: 'Ölstand', data: pts.map(p => ({ x: p.t, y: p.v })), borderColor: cssVar('--oil'), backgroundColor: alpha(cssVar('--oil'), .12), fill: true, stepped: false, pointRadius: 2, tension: 0 },
+      { label: 'Betankung', type: 'scatter', data: fills.map(f => ({ x: S.parseZeit(f.zeit), y: f.liter })), backgroundColor: cssVar('--accent'), pointStyle: 'triangle', pointRadius: 7 },
+    ] },
+    options: baseOptions({
+      plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { title: i => fmtDate(i[0].raw.x, false), label: c => c.dataset.label === 'Betankung' ? `getankt ${fmt(c.raw.y)} L` : `${fmt(c.raw.y)} L` } } },
+      scales: { x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy', displayFormats: { month: 'MM.yy', quarter: 'MM.yy', year: 'yyyy', week: 'dd.MM.', day: 'dd.MM.' } }, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 16 } }, y: { ...o.scales.y, ...(tank ? { max: tank } : {}) } },
+    }),
+  });
+}
+
+// ---------- Nutzungsgrad ----------
+function effizienz(body) {
+  const heat = S.sumDaily(heatMaps().map(m => m.daily));
+  const oil = S.oilDaily();
+  const f = store.settings().oelKwhProLiter;
+  if (!heat.size || !oil.size) { body.innerHTML = noData('Dafür braucht es Ablesungen mit Wärmezählern und Ölstand im selben Zeitraum.'); return; }
+  const gran = lsGet('wz.stats.egran', 'month');
+  // Nur Tage, die von beiden abgedeckt sind
+  const both = [...heat.keys()].filter(k => oil.has(k));
+  const h = new Map(both.map(k => [k, heat.get(k)])), o2 = new Map(both.map(k => [k, oil.get(k)]));
+  const ah = S.aggregate(h, gran), ao = S.aggregate(o2, gran);
+  const keys = S.periodRange(both, gran).slice(-24);
+  const rows = keys.map(k => {
+    const w = ah.get(k)?.menge, l = ao.get(k)?.menge;
+    return { k, w, l, oelKwh: l ? l * f : null, grad: w && l ? w / (l * f) : null, abdeckung: Math.min(ah.get(k)?.abdeckung ?? 0, ao.get(k)?.abdeckung ?? 0) };
+  });
+  const totW = rows.reduce((s, r) => s + (r.w || 0), 0), totL = rows.reduce((s, r) => s + (r.l || 0), 0);
+
+  body.innerHTML = `
+    <div class="toolbar"><div class="seg" data-gran>${GRANS.map(([k, l]) => `<button data-k="${k}" class="${k === gran ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="card"><div class="kpis">
+      <div class="kpi"><div class="label">Nutzungsgrad gesamt</div><div class="value">${totL ? fmt(totW / (totL * f) * 100, 0) : '–'}<span class="unit">%</span></div></div>
+      <div class="kpi"><div class="label">Wärme gemessen</div><div class="value">${fmtAuto(totW)}<span class="unit">kWh</span></div></div>
+      <div class="kpi"><div class="label">Öl eingesetzt</div><div class="value">${fmtAuto(totL)}<span class="unit">L</span></div><div class="muted small">≈ ${fmtAuto(totL * f)} kWh (${fmt(f, 1)} kWh/L)</div></div>
+    </div></div>
+    <div class="card"><h2>Nutzungsgrad (gemessene Wärme ÷ Energie im Öl)</h2><div class="chart"><canvas data-c></canvas></div>
+      <p class="muted small">Die Differenz sind Kessel-, Abgas- und Leitungsverluste sowie Wärme, die an keinem Zähler vorbeikommt (z. B. Warmwasser ohne Zähler). Werte über 100 % deuten auf Ablesefehler oder einen zu niedrigen Heizwert hin (Einstellungen).</p></div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Zeitraum</th><th>Wärme kWh</th><th>Öl L</th><th>Öl kWh</th><th>Nutzungsgrad</th></tr></thead><tbody>
+      ${[...rows].reverse().map(r => `<tr><td>${S.periodLabel(r.k, gran)}${r.abdeckung < .95 ? ' *' : ''}</td><td>${fmtAuto(r.w)}</td><td>${fmtAuto(r.l)}</td><td>${fmtAuto(r.oelKwh)}</td><td>${r.grad !== null ? fmt(r.grad * 100, 0) + ' %' : '–'}</td></tr>`).join('')}
+    </tbody></table></div></div>`;
+  body.querySelector('[data-gran]').onclick = ev => { const b = ev.target.closest('button'); if (b) { lsSet('wz.stats.egran', b.dataset.k); effizienz(body); } };
+  const o = baseOptions();
+  chart(canvas(body, '[data-c]'), {
+    data: {
+      labels: rows.map(r => S.periodLabel(r.k, gran)),
+      datasets: [
+        { type: 'line', label: 'Nutzungsgrad %', data: rows.map(r => r.grad !== null ? r.grad * 100 : null), borderColor: cssVar('--accent'), backgroundColor: cssVar('--accent'), yAxisID: 'y2', tension: .3, spanGaps: true },
+        { type: 'bar', label: 'Wärme kWh', data: rows.map(r => r.w), backgroundColor: alpha(cssVar('--c2'), .7), borderRadius: 3, maxBarThickness: 30 },
+        { type: 'bar', label: 'Öl kWh', data: rows.map(r => r.oelKwh), backgroundColor: alpha(cssVar('--oil'), .5), borderRadius: 3, maxBarThickness: 30 },
+      ],
+    },
+    options: baseOptions({
+      plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { label: c => c.dataset.yAxisID === 'y2' ? `Nutzungsgrad ${fmt(c.raw, 0)} %` : `${c.dataset.label}: ${fmtAuto(c.raw)}` } } },
+      scales: { x: o.scales.x, y: o.scales.y, y2: { position: 'right', min: 0, suggestedMax: 100, grid: { display: false }, border: { display: false }, ticks: { callback: v => v + ' %' } } },
+    }),
+  });
+}
+
+// ---------- Einstellungen vs. Verbrauch ----------
+async function einstellungen(body) {
+  const ser = S.settingsSeries();
+  const heat = S.sumDaily(heatMaps().map(m => m.daily));
+  if (!ser.length && !heat.size) { body.innerHTML = noData('Noch keine Heizungseinstellungen oder Verbräuche erfasst.'); return; }
+  const changes = S.settingChanges();
+  let temps = null;
+  const first = [...heat.keys()].sort()[0];
+  if (first) { try { temps = await W.temperatures(first); } catch { /* ohne Witterung */ } }
+  const s = store.settings();
+  const LBL = { kennlinie: 'Kennlinie', vorlaufTag: 'Vorlauf Tag', vorlaufNacht: 'Vorlauf Nacht', pumpe: 'Pumpe' };
+
+  // Wirkung je Änderung: Ø kWh/Gradtag 14 Tage vorher vs. nachher
+  const effect = ch => {
+    if (!temps) return null;
+    const win = (from, to) => {
+      let m = 0, g = 0;
+      for (const [k, v] of heat) { const d = S.dayDate(k); if (d >= from && d < to) { m += v.menge; g += S.gradtag(temps.get(k) ?? 99, s) * v.abdeckung; } }
+      return g > 40 ? m / g : null; // nur mit nennenswertem Heizbedarf aussagekräftig
+    };
+    const t = ch.t, D = 14 * 86400000;
+    return { vor: win(new Date(t - D), t), nach: win(t, new Date(+t + D)) };
+  };
+
+  body.innerHTML = `
+    <div class="card"><h2>Heizungseinstellungen und Wärmeverbrauch</h2><div class="chart tall"><canvas data-c></canvas></div>
+      <p class="muted small">Balken: Ø Wärmeverbrauch aller Kreise pro Tag (Woche). Linien: Vorlauftemperaturen, Kennlinie und Pumpenstufe (rechte Achse).</p></div>
+    <div class="card"><h2>Änderungen und ihre Wirkung</h2>
+      ${changes.length ? `<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Änderung</th>${temps ? '<th>kWh/Gt vorher</th><th>nachher</th><th>Δ</th>' : ''}</tr></thead><tbody>
+        ${[...changes].reverse().map(ch => { const e = effect(ch); const d = e && e.vor && e.nach ? (e.nach / e.vor - 1) * 100 : null; return `<tr><td>${fmtDate(ch.t, false)}</td><td style="text-align:left;white-space:normal">${ch.diff.map(x => `${LBL[x.k]} ${fmt(x.von, x.von % 1 ? 1 : 0)} → ${fmt(x.nach, x.nach % 1 ? 1 : 0)}`).join('<br>')}</td>${temps ? `<td>${e?.vor ? fmt(e.vor, 2) : '–'}</td><td>${e?.nach ? fmt(e.nach, 2) : '–'}</td><td>${d !== null ? (d > 0 ? '+' : '') + fmt(d, 0) + ' %' : '–'}</td>` : ''}</tr>`; }).join('')}
+      </tbody></table></div><p class="muted small">Vergleich je 14 Tage vor und nach der Änderung, witterungsbereinigt pro Gradtag. Kurze Zeiträume schwanken stark – als Tendenz verstehen.</p>` : '<p class="muted">Noch keine Änderungen erfasst. Sobald sich Kennlinie, Vorlauf oder Pumpenstufe zwischen zwei Ablesungen ändern, erscheint das hier.</p>'}
+    </div>`;
+
+  const wk = S.aggregate(heat, 'week');
+  const bars = [...wk].filter(([, o]) => o.tage >= 2).map(([k, o]) => {
+    const [y, w] = k.split('-W').map(Number);
+    const jan4 = new Date(y, 0, 4); const mon = new Date(jan4); mon.setDate(jan4.getDate() - ((jan4.getDay() || 7) - 1) + (w - 1) * 7 + 3);
+    return { x: mon, y: o.menge / o.tage };
+  }).sort((a, b) => a.x - b.x);
+  const line = (k, col, dash) => ({ type: 'line', label: LBL[k], data: ser.filter(p => Number.isFinite(p[k])).map(p => ({ x: p.t, y: p[k] })), borderColor: col, backgroundColor: col, stepped: 'before', pointRadius: 2, borderWidth: 2, borderDash: dash, yAxisID: 'y2' });
+  const o = baseOptions();
+  chart(canvas(body, '[data-c]'), {
+    data: { datasets: [
+      { type: 'bar', label: 'kWh/Tag', data: bars, backgroundColor: alpha(cssVar('--accent'), .45), borderRadius: 2, barPercentage: 1, categoryPercentage: 1, maxBarThickness: 18, yAxisID: 'y' },
+      line('vorlaufTag', cssVar('--c1'), []), line('vorlaufNacht', cssVar('--c2'), []), line('kennlinie', cssVar('--c3'), [5, 3]), line('pumpe', cssVar('--c4'), [2, 3]),
+    ] },
+    options: baseOptions({
+      plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { title: i => fmtDate(i[0].raw.x, false), label: c => `${c.dataset.label}: ${fmt(c.raw.y, c.dataset.yAxisID === 'y' ? 1 : (c.raw.y % 1 ? 1 : 0))}` } } },
+      scales: {
+        x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy', displayFormats: { month: 'MM.yy', quarter: 'MM.yy', year: 'yyyy', week: 'dd.MM.', day: 'dd.MM.' } }, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 16 } },
+        y: { ...o.scales.y, title: { display: true, text: 'kWh/Tag' } },
+        y2: { position: 'right', grid: { display: false }, border: { display: false }, beginAtZero: true, title: { display: true, text: '°C / Stufe' } },
+      },
+    }),
+  });
+}
+
+export function destroyCharts() { destroyAll(); }
