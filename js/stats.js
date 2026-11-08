@@ -190,13 +190,13 @@ export function avgPerDay(daily, n) {
 // ---------- Heizungseinstellungen ----------
 export function settingsSeries() {
   return store.eintraege('ablesung')
-    .filter(e => [e.kennlinie, e.vorlaufTag, e.vorlaufNacht, e.pumpe].some(Number.isFinite))
-    .map(e => ({ t: parseZeit(e.zeit), kennlinie: e.kennlinie, vorlaufTag: e.vorlaufTag, vorlaufNacht: e.vorlaufNacht, pumpe: e.pumpe }));
+    .filter(e => [e.kennlinie, e.kennlinieNacht, e.vorlaufTag, e.vorlaufNacht, e.pumpe].some(Number.isFinite))
+    .map(e => ({ t: parseZeit(e.zeit), kennlinie: e.kennlinie, kennlinieNacht: e.kennlinieNacht, vorlaufTag: e.vorlaufTag, vorlaufNacht: e.vorlaufNacht, pumpe: e.pumpe }));
 }
 export function settingChanges() {
   const s = settingsSeries();
   const ch = [];
-  const keys = ['kennlinie', 'vorlaufTag', 'vorlaufNacht', 'pumpe'];
+  const keys = ['kennlinie', 'kennlinieNacht', 'vorlaufTag', 'vorlaufNacht', 'pumpe'];
   for (let i = 1; i < s.length; i++) {
     const diff = keys.filter(k => Number.isFinite(s[i][k]) && Number.isFinite(s[i - 1][k]) && s[i][k] !== s[i - 1][k]);
     if (diff.length) ch.push({ t: s[i].t, diff: diff.map(k => ({ k, von: s[i - 1][k], nach: s[i][k] })) });

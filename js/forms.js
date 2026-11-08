@@ -3,7 +3,7 @@ import * as store from './store.js';
 import { parseZeit } from './stats.js';
 import { esc, fmt, fmtAuto, fmtAgo, parseNum, numStr, nowLocal, toast, confirmDialog } from './ui.js';
 
-const HEIZ = ['vorlaufTag', 'vorlaufNacht', 'kennlinie', 'pumpe'];
+const HEIZ = ['vorlaufTag', 'vorlaufNacht', 'kennlinie', 'kennlinieNacht', 'pumpe'];
 
 // Letzter Wert eines Feldes vor einem Zeitpunkt (bearbeiteter Eintrag ausgenommen)
 function lastBefore(zeit, getter, excludeId) {
@@ -62,9 +62,12 @@ export function formHtml(typ, e = null) {
   const prevOil = lastBefore(e?.zeit, x => x.oel, e?.id);
   const pre = k => (e ? e[k] : lastBefore(null, x => x[k])?.v);
   const s = store.settings();
-  const kl = pre('kennlinie');
-  const klOpts = ['<option value="">–</option>'];
-  for (let i = s.kennlinieMin; i <= s.kennlinieMax; i++) klOpts.push(`<option ${kl === i ? 'selected' : ''}>${i}</option>`);
+  const klOpts = name => {
+    const kl = pre(name);
+    const o = ['<option value="">–</option>'];
+    for (let i = s.kennlinieMin; i <= s.kennlinieMax; i++) o.push(`<option ${kl === i ? 'selected' : ''}>${i}</option>`);
+    return o.join('');
+  };
   const pumpe = pre('pumpe');
 
   return `<form class="stack" data-typ="ablesung">
@@ -81,7 +84,8 @@ export function formHtml(typ, e = null) {
     <div class="fields">
       <label class="field" data-heiz="vorlaufTag"><span>Vorlauf Tag (°C)</span><input name="vorlaufTag" inputmode="decimal" value="${numStr(pre('vorlaufTag'))}"></label>
       <label class="field" data-heiz="vorlaufNacht"><span>Vorlauf Nacht (°C)</span><input name="vorlaufNacht" inputmode="decimal" value="${numStr(pre('vorlaufNacht'))}"></label>
-      <label class="field" data-heiz="kennlinie"><span>Kennlinie</span><select name="kennlinie">${klOpts.join('')}</select></label>
+      <label class="field" data-heiz="kennlinie"><span>Kennlinie Tag</span><select name="kennlinie">${klOpts('kennlinie')}</select></label>
+      <label class="field" data-heiz="kennlinieNacht"><span>Kennlinie Nacht</span><select name="kennlinieNacht">${klOpts('kennlinieNacht')}</select></label>
       <div class="field" data-heiz="pumpe"><span>Pumpenstufe</span>
         <div class="seg full" data-pumpe>${[1, 2, 3].map(p => `<button type="button" data-v="${p}" class="${pumpe === p ? 'active' : ''}">${p}</button>`).join('')}</div>
         <input type="hidden" name="pumpe" value="${pumpe ?? ''}"></div>

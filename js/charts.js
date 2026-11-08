@@ -462,7 +462,7 @@ async function einstellungen(body) {
   const first = [...heat.keys()].sort()[0];
   if (first) { try { temps = await W.temperatures(first); } catch { /* ohne Witterung */ } }
   const s = store.settings();
-  const LBL = { kennlinie: 'Kennlinie', vorlaufTag: 'Vorlauf Tag', vorlaufNacht: 'Vorlauf Nacht', pumpe: 'Pumpe' };
+  const LBL = { kennlinie: 'Kennlinie Tag', kennlinieNacht: 'Kennlinie Nacht', vorlaufTag: 'Vorlauf Tag', vorlaufNacht: 'Vorlauf Nacht', pumpe: 'Pumpe' };
 
   // Wirkung je Änderung: Ø kWh/Gradtag 14 Tage vorher vs. nachher
   const effect = ch => {
@@ -478,7 +478,7 @@ async function einstellungen(body) {
 
   body.innerHTML = `
     <div class="card"><h2>Heizungseinstellungen und Wärmeverbrauch</h2><div class="chart tall"><canvas data-c></canvas></div>
-      <p class="muted small">Balken: Ø Wärmeverbrauch aller Kreise pro Tag (Woche). Linien: Vorlauftemperaturen, Kennlinie und Pumpenstufe (rechte Achse).</p></div>
+      <p class="muted small">Balken: Ø Wärmeverbrauch aller Kreise pro Tag (Woche). Linien: Vorlauftemperaturen, Kennlinien Tag/Nacht und Pumpenstufe (rechte Achse).</p></div>
     <div class="card"><h2>Änderungen und ihre Wirkung</h2>
       ${changes.length ? `<div class="table-wrap"><table><thead><tr><th>Datum</th><th>Änderung</th>${temps ? '<th>kWh/Gt vorher</th><th>nachher</th><th>Δ</th>' : ''}</tr></thead><tbody>
         ${[...changes].reverse().map(ch => { const e = effect(ch); const d = e && e.vor && e.nach ? (e.nach / e.vor - 1) * 100 : null; return `<tr><td>${fmtDate(ch.t, false)}</td><td style="text-align:left;white-space:normal">${ch.diff.map(x => `${LBL[x.k]} ${fmt(x.von, x.von % 1 ? 1 : 0)} → ${fmt(x.nach, x.nach % 1 ? 1 : 0)}`).join('<br>')}</td>${temps ? `<td>${e?.vor ? fmt(e.vor, 2) : '–'}</td><td>${e?.nach ? fmt(e.nach, 2) : '–'}</td><td>${d !== null ? (d > 0 ? '+' : '') + fmt(d, 0) + ' %' : '–'}</td>` : ''}</tr>`; }).join('')}
@@ -496,7 +496,7 @@ async function einstellungen(body) {
   chart(canvas(body, '[data-c]'), {
     data: { datasets: [
       { type: 'bar', label: 'kWh/Tag', data: bars, backgroundColor: alpha(cssVar('--accent'), .45), borderRadius: 2, barPercentage: 1, categoryPercentage: 1, maxBarThickness: 18, yAxisID: 'y' },
-      line('vorlaufTag', cssVar('--c1'), []), line('vorlaufNacht', cssVar('--c2'), []), line('kennlinie', cssVar('--c3'), [5, 3]), line('pumpe', cssVar('--c4'), [2, 3]),
+      line('vorlaufTag', cssVar('--c1'), []), line('vorlaufNacht', cssVar('--c2'), []), line('kennlinie', cssVar('--c3'), [5, 3]), line('kennlinieNacht', cssVar('--c5'), [5, 3]), line('pumpe', cssVar('--c4'), [2, 3]),
     ] },
     options: baseOptions({
       plugins: { ...o.plugins, tooltip: { ...o.plugins.tooltip, callbacks: { title: i => fmtDate(i[0].raw.x, false), label: c => `${c.dataset.label}: ${fmt(c.raw.y, c.dataset.yAxisID === 'y' ? 1 : (c.raw.y % 1 ? 1 : 0))}` } } },

@@ -1,3 +1,7 @@
 .claude/
 .DS_Store
 *.csv
+waermezaehler-daten*.json
+import/
+Import/
+*.pdf

@@ -51,7 +51,8 @@ function targets() {
     ['preis', 'Betankung Preis (€)'],
     ['vorlaufTag', 'Vorlauf Tag'],
     ['vorlaufNacht', 'Vorlauf Nacht'],
-    ['kennlinie', 'Kennlinie'],
+    ['kennlinie', 'Kennlinie Tag'],
+    ['kennlinieNacht', 'Kennlinie Nacht'],
     ['pumpe', 'Pumpenstufe'],
     ['notiz', 'Notiz'],
   ];
@@ -66,6 +67,7 @@ function guess(h) {
   if (/öl|oel|heizöl/.test(s)) return 'oel';
   if (/vorlauf.*(nacht|absenk)|nacht/.test(s)) return 'vorlaufNacht';
   if (/vorlauf/.test(s)) return 'vorlaufTag';
+  if (/(kennlinie|kurve).*nacht/.test(s)) return 'kennlinieNacht';
   if (/kennlinie|kurve|steilheit/.test(s)) return 'kennlinie';
   if (/pumpe/.test(s)) return 'pumpe';
   if (/notiz|bemerk|kommentar/.test(s)) return 'notiz';
@@ -97,11 +99,11 @@ export function importDialog(text) {
         for (const [k, col] of Object.entries(map)) {
           if (k.startsWith('k:')) { const v = parseNum(r[col]); if (v !== null) e.werte[k.slice(2)] = v; }
         }
-        for (const k of ['oel', 'vorlaufTag', 'vorlaufNacht', 'kennlinie', 'pumpe']) { const v = parseNum(get(k)); if (v !== null) e[k] = v; }
+        for (const k of ['oel', 'vorlaufTag', 'vorlaufNacht', 'kennlinie', 'kennlinieNacht', 'pumpe']) { const v = parseNum(get(k)); if (v !== null) e[k] = v; }
         const notiz = (get('notiz') || '').trim(); if (notiz) e.notiz = notiz;
         const getankt = parseNum(get('getankt'));
         if (getankt) out.push({ typ: 'betankung', zeit, liter: getankt, preis: parseNum(get('preis')) ?? undefined });
-        if (Object.keys(e.werte).length || ['oel', 'vorlaufTag', 'vorlaufNacht', 'kennlinie', 'pumpe'].some(k => k in e)) out.push(e);
+        if (Object.keys(e.werte).length || ['oel', 'vorlaufTag', 'vorlaufNacht', 'kennlinie', 'kennlinieNacht', 'pumpe'].some(k => k in e)) out.push(e);
       });
       return { out, errors, hasDate: 'datum' in map };
     };
@@ -125,7 +127,7 @@ export function importDialog(text) {
 
 export function exportCsv() {
   const kreise = store.kreise({ alle: true });
-  const head = ['Typ', 'Datum', 'Uhrzeit', ...kreise.map(k => k.name + ' kWh'), 'Ölstand L', 'Vorlauf Tag', 'Vorlauf Nacht', 'Kennlinie', 'Pumpe', 'Getankt L', 'Preis €', 'Kreis (Wechsel)', 'Endstand alt', 'Startstand neu', 'Notiz', 'Erfasst von'];
+  const head = ['Typ', 'Datum', 'Uhrzeit', ...kreise.map(k => k.name + ' kWh'), 'Ölstand L', 'Vorlauf Tag', 'Vorlauf Nacht', 'Kennlinie Tag', 'Kennlinie Nacht', 'Pumpe', 'Getankt L', 'Preis €', 'Kreis (Wechsel)', 'Endstand alt', 'Startstand neu', 'Notiz', 'Erfasst von'];
   const n = v => (Number.isFinite(v) ? String(v).replace('.', ',') : '');
   const q = s => (/[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
   const typName = { ablesung: 'Ablesung', betankung: 'Betankung', zaehlerwechsel: 'Zählerwechsel' };
@@ -135,7 +137,7 @@ export function exportCsv() {
     const [y, m, dd] = d.split('-');
     lines.push([
       typName[e.typ], `${dd}.${m}.${y}`, t || '',
-      ...kreise.map(k => n(e.werte?.[k.id])), n(e.oel), n(e.vorlaufTag), n(e.vorlaufNacht), n(e.kennlinie), n(e.pumpe),
+      ...kreise.map(k => n(e.werte?.[k.id])), n(e.oel), n(e.vorlaufTag), n(e.vorlaufNacht), n(e.kennlinie), n(e.kennlinieNacht), n(e.pumpe),
       n(e.liter), n(e.preis), e.kreisId ? store.kreis(e.kreisId)?.name || '' : '', n(e.endstand), n(e.startstand),
       q(e.notiz || ''), q(e.von || ''),
     ].join(';'));

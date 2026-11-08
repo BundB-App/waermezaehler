@@ -124,7 +124,7 @@ function home() {
         ${heiz ? `<div class="kpis">
           <div class="kpi"><div class="label">Vorlauf Tag</div><div class="value">${fmt(heiz.vorlaufTag, heiz.vorlaufTag % 1 ? 1 : 0)}<span class="unit">°C</span></div></div>
           <div class="kpi"><div class="label">Vorlauf Nacht</div><div class="value">${fmt(heiz.vorlaufNacht, heiz.vorlaufNacht % 1 ? 1 : 0)}<span class="unit">°C</span></div></div>
-          <div class="kpi"><div class="label">Kennlinie</div><div class="value">${fmt(heiz.kennlinie)}</div></div>
+          <div class="kpi"><div class="label">Kennlinie Tag/Nacht</div><div class="value">${fmt(heiz.kennlinie)}<span class="unit">/</span>${fmt(heiz.kennlinieNacht)}</div></div>
           <div class="kpi"><div class="label">Pumpe</div><div class="value">${fmt(heiz.pumpe)}</div></div></div>` : '<p class="muted">Noch nichts erfasst.</p>'}</div>
     </div>
     <div class="card" style="margin-top:12px"><h2>Letzte 12 Wochen (kWh)</h2><div class="chart short"><canvas data-mini></canvas></div>
@@ -176,7 +176,7 @@ function list() {
       ...kreise.filter(k => Number.isFinite(e.werte?.[k.id])).map(k => `${esc(k.name)} ${fmt(e.werte[k.id], e.werte[k.id] % 1 ? 1 : 0)}`),
       Number.isFinite(e.oel) ? `Öl ${fmt(e.oel)} L` : null,
       Number.isFinite(e.vorlaufTag) || Number.isFinite(e.vorlaufNacht) ? `VL ${fmt(e.vorlaufTag)}/${fmt(e.vorlaufNacht)} °C` : null,
-      Number.isFinite(e.kennlinie) ? `KL ${fmt(e.kennlinie)}` : null,
+      Number.isFinite(e.kennlinie) || Number.isFinite(e.kennlinieNacht) ? `KL ${fmt(e.kennlinie)}/${fmt(e.kennlinieNacht)}` : null,
       Number.isFinite(e.pumpe) ? `P${e.pumpe}` : null,
     ];
   };

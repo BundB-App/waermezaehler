@@ -26,7 +26,7 @@ function defaultData() {
   return {
     version: 1,
     kreise: [
-      { id: 'k-ug', name: 'UG', farbe: 1, reihenfolge: 1, archiviert: false, geaendert: 0 },
+      { id: 'k-ug', name: 'EG', farbe: 1, reihenfolge: 1, archiviert: false, geaendert: 0 },
       { id: 'k-og', name: 'OG', farbe: 2, reihenfolge: 2, archiviert: false, geaendert: 0 },
       { id: 'k-studio', name: 'Studio', farbe: 3, reihenfolge: 3, archiviert: false, geaendert: 0 },
     ],
